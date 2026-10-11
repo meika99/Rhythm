@@ -1,0 +1,33 @@
+name: Build APK (manual)
+
+# Solo se ejecuta a mano: pestaña "Actions" -> "Build APK (manual)" -> "Run workflow".
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: 'zulu'
+          cache: gradle
+
+      - name: Dar permiso a gradlew
+        run: chmod +x gradlew
+
+      - name: Crear private.properties vacio
+        run: touch ./private.properties
+
+      - name: Compilar APK debug (sabor github)
+        run: ./gradlew assembleGithubDebug --no-daemon --stacktrace
+
+      - name: Subir APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rhythm-Spatial-debug-apk
+          path: app/build/outputs/apk/github/debug/*.apk
+          retention-days: 30
