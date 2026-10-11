@@ -240,15 +240,20 @@ fun PlayerCustomizationSettingsScreen(onBackClick: () -> Unit) {
                                     ExpressiveButtonGroup(
                                         items = listOf(
                                             "Rhythm",
-                                            "Expressive"
+                                            "Expressive",
+                                            "Spatial"
                                         ),
-                                        selectedIndex = if (playerThemeId == "MATERIAL") 0 else 1,
+                                        selectedIndex = when (playerThemeId) {
+                                            "MATERIAL" -> 0
+                                            "SPATIAL" -> 2
+                                            else -> 1
+                                        },
                                         onItemClick = { index ->
                                             HapticUtils.performHapticFeedback(context, haptics, HapticType.HEAVY)
-                                            if (index == 1) {
-                                                appSettings.setPlayerThemeId("EXPRESSIVE")
-                                            } else {
-                                                appSettings.setPlayerThemeId("MATERIAL")
+                                            when (index) {
+                                                1 -> appSettings.setPlayerThemeId("EXPRESSIVE")
+                                                2 -> appSettings.setPlayerThemeId("SPATIAL")
+                                                else -> appSettings.setPlayerThemeId("MATERIAL")
                                             }
                                         },
                                         modifier = Modifier.fillMaxWidth()
