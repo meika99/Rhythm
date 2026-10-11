@@ -375,87 +375,134 @@ fun PlayerScreen(
             onRefreshDevices()
         }
 
-        ExpressivePlayerScreen(
-            song = song,
-            isPlaying = isPlaying,
-            isFavorite = isFavorite,
-            progress = { progressValue },
-            currentTimeStr = currentTimeStr,
-            totalTimeStr = totalTimeStr,
-            onTotalTimeClick = { appSettings.setShowRemainingTime(!showRemainingTime) },
-            queuePosition = queuePosition,
-            queueTotal = queueTotal,
-            isShuffleEnabled = isShuffleEnabled,
-            repeatMode = repeatMode,
-            showLyricsView = showLyricsView,
-            showLyrics = showLyrics,
-            lyrics = lyrics,
-            isLoadingLyrics = isLoadingLyrics,
-            onlineOnlyLyrics = onlineOnlyLyrics,
-            onLyricsSeek = onLyricsSeek,
-            onRetryLyrics = onRetryLyrics,
-            onShowLyricsEditor = { showLyricsEditorDialog = true },
-            onPickLyricsFile = onPickLyricsFile,
-            onNavigateToLyricsSettings = {
-                try {
-                    navController.navigate(Screen.TunerLyrics.route) {
-                        popUpTo(Screen.Player.route) {
-                            inclusive = true
-                        }
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.e("PlayerScreen", "Failed to navigate to lyrics settings", e)
-                }
-            },
-            isMediaLoading = isMediaLoading,
-            isSeeking = isSeeking,
-            onPlayPause = onPlayPause,
-            onSeek = onSeek,
-            onSkipPrevious = onSkipPrevious,
-            onSkipNext = onSkipNext,
-            onToggleFavorite = onToggleFavorite,
-            onToggleShuffle = onToggleShuffle,
-            onToggleRepeat = onToggleRepeat,
-            onToggleLyrics = { showLyricsView = !showLyricsView },
-            onSongInfoClick = { showSongInfoSheet = true },
-            onOpenFullScreenLyrics = { showFullScreenLyrics = true },
-            onShowAlbumBottomSheet = {
-                song?.let { currentSong ->
-                    val playerInStack = try {
-                        navController.getBackStackEntry(Screen.Player.route)
-                        true
-                    } catch (_: IllegalArgumentException) {
-                        false
-                    }
-                    if (playerInStack) {
-                        navController.popBackStack(Screen.Player.route, inclusive = true)
-                    }
-                    val album = resolveAlbumForSong(currentSong)
-                    if (album != null) {
-                        if (isStreamingMode) {
-                            navController.navigate("streaming_album/${android.net.Uri.encode(album.id)}?albumName=${android.net.Uri.encode(album.title)}")
-                        } else {
-                            navController.navigate(Screen.AlbumDetail.createRoute(album.id, album.title))
-                        }
-                    } else {
-                        if (isStreamingMode) {
-                            val serviceId = currentSong.id.substringBefore("::", "JELLYFIN")
-                            val streamingFallbackId = currentSong.albumId.takeIf { it.isNotBlank() }
-                                ?: "$serviceId::album::${currentSong.artist}::${currentSong.album}"
-                            navController.navigate("streaming_album/${android.net.Uri.encode(streamingFallbackId)}?albumName=${android.net.Uri.encode(currentSong.album)}")
-                        } else {
-                            val fallbackAlbumId = currentSong.albumId.takeIf { it.isNotBlank() } ?: "unknown_" + currentSong.album
-                            navController.navigate(Screen.AlbumDetail.createRoute(fallbackAlbumId, currentSong.album))
-                        }
-                    }
-                }
-            },
-            onShowArtist = {
-                song?.let { currentSong ->
-                    val artistNames = splitArtistNames(currentSong.artist)
+        if (playerThemeId == "SPATIAL") {
+            SpatialPlayerScreen(
+                song = song,
+                isPlaying = isPlaying,
+                isFavorite = isFavorite,
+                progress = { progressValue },
+                currentTimeStr = currentTimeStr,
+                totalTimeStr = totalTimeStr,
+                onTotalTimeClick = { appSettings.setShowRemainingTime(!showRemainingTime) },
+                isShuffleEnabled = isShuffleEnabled,
+                repeatMode = repeatMode,
+                onPlayPause = onPlayPause,
+                onSeek = onSeek,
+                onSkipPrevious = onSkipPrevious,
+                onSkipNext = onSkipNext,
+                onToggleFavorite = onToggleFavorite,
+                onToggleShuffle = onToggleShuffle,
+                onToggleRepeat = onToggleRepeat,
+                onOpenLyrics = { showFullScreenLyrics = true },
+                onQueueClick = { showQueueSheet = true },
+                onSongInfoClick = { showSongInfoSheet = true },
+                onShowArtist = {
+                    song?.let { currentSong ->
+                        val artistNames = splitArtistNames(currentSong.artist)
 
-                    if (artistNames.size <= 1) {
-                        val artist = currentSongArtistForSheet ?: artists.firstOrNull { it.name.trim().equals(currentSong.artist.trim(), ignoreCase = true) } ?: Artist(id = currentSong.artist.trim(), name = currentSong.artist.trim())
+                        if (artistNames.size <= 1) {
+                            val artist = currentSongArtistForSheet ?: artists.firstOrNull { it.name.trim().equals(currentSong.artist.trim(), ignoreCase = true) } ?: Artist(id = currentSong.artist.trim(), name = currentSong.artist.trim())
+                            val playerInStack = try {
+                                navController.getBackStackEntry(Screen.Player.route)
+                                true
+                            } catch (_: IllegalArgumentException) {
+                                false
+                            }
+                            if (playerInStack) {
+                                navController.popBackStack(Screen.Player.route, inclusive = true)
+                            }
+                            navController.navigate(Screen.ArtistDetail.createRoute(artist.name))
+                        } else {
+                            val resolvedCandidates = artistNames.map { name ->
+                                artists.firstOrNull { it.name.trim().equals(name.trim(), ignoreCase = true) }
+                                    ?: Artist(id = name.trim(), name = name.trim())
+                            }
+                            candidateArtists = resolvedCandidates
+                            showArtistChooserSheet = true
+                        }
+                    }
+                },
+                onMoreClick = {
+                    showSongInfoSheet = false
+                    showMoreSheet = true
+                },
+                onEqualizer = {
+                    try {
+                        navController.navigate(Screen.Equalizer.route) {
+                            popUpTo(Screen.Player.route) {
+                                inclusive = true
+                            }
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("PlayerScreen", "Failed to navigate to equalizer", e)
+                    }
+                },
+                onSleepTimer = { showSleepTimerBottomSheet = true },
+                onShareFile = {
+                    song?.let { currentSong ->
+                        try {
+                            val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = "audio/*"
+                                putExtra(android.content.Intent.EXTRA_STREAM, currentSong.uri)
+                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(android.content.Intent.createChooser(shareIntent, "Share ${currentSong.title}"))
+                        } catch (_: Exception) {
+                            Toast.makeText(context, R.string.materialplayerscreen_unable_to_share_file, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onBack = onBack,
+                swipeToDismissEnabled = swipeToDismissEnabled && gesturePlayerSwipeDismiss,
+                modifier = modifier
+            )
+        } else {
+            ExpressivePlayerScreen(
+                song = song,
+                isPlaying = isPlaying,
+                isFavorite = isFavorite,
+                progress = { progressValue },
+                currentTimeStr = currentTimeStr,
+                totalTimeStr = totalTimeStr,
+                onTotalTimeClick = { appSettings.setShowRemainingTime(!showRemainingTime) },
+                queuePosition = queuePosition,
+                queueTotal = queueTotal,
+                isShuffleEnabled = isShuffleEnabled,
+                repeatMode = repeatMode,
+                showLyricsView = showLyricsView,
+                showLyrics = showLyrics,
+                lyrics = lyrics,
+                isLoadingLyrics = isLoadingLyrics,
+                onlineOnlyLyrics = onlineOnlyLyrics,
+                onLyricsSeek = onLyricsSeek,
+                onRetryLyrics = onRetryLyrics,
+                onShowLyricsEditor = { showLyricsEditorDialog = true },
+                onPickLyricsFile = onPickLyricsFile,
+                onNavigateToLyricsSettings = {
+                    try {
+                        navController.navigate(Screen.TunerLyrics.route) {
+                            popUpTo(Screen.Player.route) {
+                                inclusive = true
+                            }
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("PlayerScreen", "Failed to navigate to lyrics settings", e)
+                    }
+                },
+                isMediaLoading = isMediaLoading,
+                isSeeking = isSeeking,
+                onPlayPause = onPlayPause,
+                onSeek = onSeek,
+                onSkipPrevious = onSkipPrevious,
+                onSkipNext = onSkipNext,
+                onToggleFavorite = onToggleFavorite,
+                onToggleShuffle = onToggleShuffle,
+                onToggleRepeat = onToggleRepeat,
+                onToggleLyrics = { showLyricsView = !showLyricsView },
+                onSongInfoClick = { showSongInfoSheet = true },
+                onOpenFullScreenLyrics = { showFullScreenLyrics = true },
+                onShowAlbumBottomSheet = {
+                    song?.let { currentSong ->
                         val playerInStack = try {
                             navController.getBackStackEntry(Screen.Player.route)
                             true
@@ -465,64 +512,100 @@ fun PlayerScreen(
                         if (playerInStack) {
                             navController.popBackStack(Screen.Player.route, inclusive = true)
                         }
-                        navController.navigate(Screen.ArtistDetail.createRoute(artist.name))
-                    } else {
-                        val resolvedCandidates = artistNames.map { name ->
-                            artists.firstOrNull { it.name.trim().equals(name.trim(), ignoreCase = true) }
-                                ?: Artist(id = name.trim(), name = name.trim())
-                        }
-                        candidateArtists = resolvedCandidates
-                        showArtistChooserSheet = true
-                    }
-                }
-            },
-            onMoreClick = {
-                showSongInfoSheet = false
-                showMoreSheet = true
-            },
-            onDeviceClick = { showDeviceOutputSheet = true },
-            onQueueClick = { showQueueSheet = true },
-            onPlaybackSpeed = { showPlaybackSpeedDialog = true },
-            onPlaybackPitch = { showPlaybackPitchDialog = true },
-            onEqualizer = {
-                try {
-                    navController.navigate(Screen.Equalizer.route) {
-                        popUpTo(Screen.Player.route) {
-                            inclusive = true
+                        val album = resolveAlbumForSong(currentSong)
+                        if (album != null) {
+                            if (isStreamingMode) {
+                                navController.navigate("streaming_album/${android.net.Uri.encode(album.id)}?albumName=${android.net.Uri.encode(album.title)}")
+                            } else {
+                                navController.navigate(Screen.AlbumDetail.createRoute(album.id, album.title))
+                            }
+                        } else {
+                            if (isStreamingMode) {
+                                val serviceId = currentSong.id.substringBefore("::", "JELLYFIN")
+                                val streamingFallbackId = currentSong.albumId.takeIf { it.isNotBlank() }
+                                    ?: "$serviceId::album::${currentSong.artist}::${currentSong.album}"
+                                navController.navigate("streaming_album/${android.net.Uri.encode(streamingFallbackId)}?albumName=${android.net.Uri.encode(currentSong.album)}")
+                            } else {
+                                val fallbackAlbumId = currentSong.albumId.takeIf { it.isNotBlank() } ?: "unknown_" + currentSong.album
+                                navController.navigate(Screen.AlbumDetail.createRoute(fallbackAlbumId, currentSong.album))
+                            }
                         }
                     }
-                } catch (e: Exception) {
-                    android.util.Log.e("PlayerScreen", "Failed to navigate to equalizer", e)
-                }
-            },
-            onSleepTimer = { showSleepTimerBottomSheet = true },
-            onAddToPlaylist = { showAddToPlaylistSheetInternal = true },
-            onShareFile = {
-                song?.let { currentSong ->
+                },
+                onShowArtist = {
+                    song?.let { currentSong ->
+                        val artistNames = splitArtistNames(currentSong.artist)
+
+                        if (artistNames.size <= 1) {
+                            val artist = currentSongArtistForSheet ?: artists.firstOrNull { it.name.trim().equals(currentSong.artist.trim(), ignoreCase = true) } ?: Artist(id = currentSong.artist.trim(), name = currentSong.artist.trim())
+                            val playerInStack = try {
+                                navController.getBackStackEntry(Screen.Player.route)
+                                true
+                            } catch (_: IllegalArgumentException) {
+                                false
+                            }
+                            if (playerInStack) {
+                                navController.popBackStack(Screen.Player.route, inclusive = true)
+                            }
+                            navController.navigate(Screen.ArtistDetail.createRoute(artist.name))
+                        } else {
+                            val resolvedCandidates = artistNames.map { name ->
+                                artists.firstOrNull { it.name.trim().equals(name.trim(), ignoreCase = true) }
+                                    ?: Artist(id = name.trim(), name = name.trim())
+                            }
+                            candidateArtists = resolvedCandidates
+                            showArtistChooserSheet = true
+                        }
+                    }
+                },
+                onMoreClick = {
+                    showSongInfoSheet = false
+                    showMoreSheet = true
+                },
+                onDeviceClick = { showDeviceOutputSheet = true },
+                onQueueClick = { showQueueSheet = true },
+                onPlaybackSpeed = { showPlaybackSpeedDialog = true },
+                onPlaybackPitch = { showPlaybackPitchDialog = true },
+                onEqualizer = {
                     try {
-                        val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                            type = "audio/*"
-                            putExtra(android.content.Intent.EXTRA_STREAM, currentSong.uri)
-                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        navController.navigate(Screen.Equalizer.route) {
+                            popUpTo(Screen.Player.route) {
+                                inclusive = true
+                            }
                         }
-                        context.startActivity(android.content.Intent.createChooser(shareIntent, "Share ${currentSong.title}"))
-                    } catch (_: Exception) {
-                        Toast.makeText(context, R.string.materialplayerscreen_unable_to_share_file, Toast.LENGTH_SHORT).show()
+                    } catch (e: Exception) {
+                        android.util.Log.e("PlayerScreen", "Failed to navigate to equalizer", e)
                     }
-                }
-            },
-            onEditBottomButtons = { showExpressiveBottomButtonsSheet = true },
-            onBack = onBack,
-            location = location,
-            appSettings = appSettings,
-            musicViewModel = musicViewModel,
-            isStreamingMode = isStreamingMode,
-            canvasArtwork = if (showFullScreenLyrics) null else canvasArtwork,
-            canvasLoading = if (showFullScreenLyrics) false else canvasLoading,
-            swipeToDismissEnabled = swipeToDismissEnabled && gesturePlayerSwipeDismiss,
-            expansionFraction = expansionFraction,
-            modifier = modifier
-        )
+                },
+                onSleepTimer = { showSleepTimerBottomSheet = true },
+                onAddToPlaylist = { showAddToPlaylistSheetInternal = true },
+                onShareFile = {
+                    song?.let { currentSong ->
+                        try {
+                            val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = "audio/*"
+                                putExtra(android.content.Intent.EXTRA_STREAM, currentSong.uri)
+                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(android.content.Intent.createChooser(shareIntent, "Share ${currentSong.title}"))
+                        } catch (_: Exception) {
+                            Toast.makeText(context, R.string.materialplayerscreen_unable_to_share_file, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onEditBottomButtons = { showExpressiveBottomButtonsSheet = true },
+                onBack = onBack,
+                location = location,
+                appSettings = appSettings,
+                musicViewModel = musicViewModel,
+                isStreamingMode = isStreamingMode,
+                canvasArtwork = if (showFullScreenLyrics) null else canvasArtwork,
+                canvasLoading = if (showFullScreenLyrics) false else canvasLoading,
+                swipeToDismissEnabled = swipeToDismissEnabled && gesturePlayerSwipeDismiss,
+                expansionFraction = expansionFraction,
+                modifier = modifier
+            )
+        }
 
         if (showDeviceOutputSheet) {
             LaunchedEffect(showDeviceOutputSheet) {
