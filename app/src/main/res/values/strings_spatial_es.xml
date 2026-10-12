@@ -1,22 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Textos del estilo de reproductor "Spatial" en espanol -->
+<!-- Vacio a proposito: los textos en espanol estan en strings_spatial.xml (evita recursos duplicados). -->
 <resources>
-    <string name="spatial_now_playing">REPRODUCIENDO</string>
-    <string name="spatial_nothing_playing">Nada en reproducción</string>
-    <string name="spatial_like">Me gusta</string>
-    <string name="spatial_shuffle">Aleatorio</string>
-    <string name="spatial_repeat">Repetir</string>
-    <string name="spatial_lyrics">Letra</string>
-    <string name="spatial_queue">Cola</string>
-    <string name="spatial_sleep_timer">Temporizador</string>
-    <string name="spatial_equalizer">Ecualizador</string>
-    <string name="spatial_share">Compartir</string>
-    <string name="spatial_collapse">Cerrar reproductor</string>
-    <string name="spatial_more_options">Más opciones</string>
-    <string name="spatial_open_queue">Abrir cola</string>
-    <string name="spatial_previous">Canción anterior</string>
-    <string name="spatial_next">Siguiente canción</string>
-    <string name="spatial_play">Reproducir</string>
-    <string name="spatial_pause">Pausar</string>
-    <string name="spatial_more">Más</string>
 </resources>
