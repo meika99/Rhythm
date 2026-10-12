@@ -104,6 +104,8 @@ import chromahub.rhythm.app.shared.presentation.components.player.spatialSurface
 import chromahub.rhythm.app.util.ImageUtils
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import coil.size.Precision
+import coil.size.Scale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -275,7 +277,7 @@ fun SpatialPlayerScreen(
             }
 
             // ---- Portada ----
-            val artShape = RoundedCornerShape(16.dp)
+            val artShape = RoundedCornerShape(22.dp)
             Box(
                 modifier = Modifier
                     .size(albumArtSize)
@@ -532,7 +534,7 @@ fun SpatialPlayerScreen(
 }
 
 /**
- * Fondo de SpatialFlow adaptado: la misma portada, miniatura de 32 px ampliada a toda la pantalla (se ve
+ * Fondo de SpatialFlow adaptado: la misma portada, miniatura de 24 px ampliada a toda la pantalla (se ve
  * difuminada y con los colores de la portada) y un velo suave para que el texto se lea. Es barato: no usa shaders de blur.
  */
 @Composable
@@ -547,8 +549,10 @@ private fun SpatialBackdrop(artworkUri: Uri?, isDark: Boolean) {
             val request = remember(uri) {
                 ImageRequest.Builder(context)
                     .data(uri)
-                    .size(32, 32)
-                    .memoryCacheKey("spatial_backdrop_$uri")
+                    .size(24, 24)
+                    .precision(Precision.EXACT)
+                    .scale(Scale.FILL)
+                    .memoryCacheKey("spatial_backdrop24_$uri")
                     .build()
             }
             AsyncImage(
@@ -563,9 +567,9 @@ private fun SpatialBackdrop(artworkUri: Uri?, isDark: Boolean) {
     val veil = remember(isDark) {
         if (isDark) {
             Brush.verticalGradient(
-                0f to Color.Black.copy(alpha = 0.10f),
-                0.55f to Color.Black.copy(alpha = 0.16f),
-                1f to Color.Black.copy(alpha = 0.20f)
+                0f to Color.Black.copy(alpha = 0.18f),
+                0.55f to Color.Black.copy(alpha = 0.28f),
+                1f to Color.Black.copy(alpha = 0.32f)
             )
         } else {
             Brush.verticalGradient(
