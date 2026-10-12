@@ -242,7 +242,9 @@ fun PlayerScreen(
         val haptic = LocalHapticFeedback.current
         val useHoursFormat by appSettings.useHoursInTimeFormat.collectAsState()
         val showRemainingTime by appSettings.showRemainingTime.collectAsState()
-        val progressValue = progress().coerceIn(0f, 1f)
+        // Rendimiento: el estilo Spatial lee el progreso por su cuenta, solo en su barra; asi PlayerScreen
+        // no se recompone 10 veces por segundo.
+        val progressValue = if (playerThemeId == "SPATIAL") 0f else progress().coerceIn(0f, 1f)
         val vmDurationMs by musicViewModel.duration.collectAsState()
         val totalTimeMs = song?.duration?.takeIf { it > 0 } ?: vmDurationMs.takeIf { it > 0 } ?: 0L
         val currentTimeMs = (progressValue * totalTimeMs).toLong()
@@ -380,9 +382,10 @@ fun PlayerScreen(
                 song = song,
                 isPlaying = isPlaying,
                 isFavorite = isFavorite,
-                progress = { progressValue },
-                currentTimeStr = currentTimeStr,
-                totalTimeStr = totalTimeStr,
+                progress = progress,
+                durationMs = totalTimeMs,
+                showRemainingTime = showRemainingTime,
+                useHoursFormat = useHoursFormat,
                 onTotalTimeClick = { appSettings.setShowRemainingTime(!showRemainingTime) },
                 isShuffleEnabled = isShuffleEnabled,
                 repeatMode = repeatMode,
