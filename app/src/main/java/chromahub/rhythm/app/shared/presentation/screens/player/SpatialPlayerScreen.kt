@@ -16,12 +16,14 @@
 
 package chromahub.rhythm.app.shared.presentation.screens.player
 
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -68,6 +70,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -82,16 +85,18 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import chromahub.rhythm.app.R
 import chromahub.rhythm.app.shared.data.model.Song
 import chromahub.rhythm.app.shared.presentation.components.icons.Icon
 import chromahub.rhythm.app.shared.presentation.components.icons.MaterialSymbolIcon
 import chromahub.rhythm.app.shared.presentation.components.player.SpatialFallbackColors
 import chromahub.rhythm.app.shared.presentation.components.player.SpatialIcons
-import chromahub.rhythm.app.shared.presentation.components.player.SpatialText
+import chromahub.rhythm.app.shared.presentation.components.player.SpatialFontFamily
 import chromahub.rhythm.app.shared.presentation.components.player.SpatialWavySlider
-import chromahub.rhythm.app.shared.presentation.components.player.formatDuration
 import chromahub.rhythm.app.shared.presentation.components.player.spatialAccentColor
 import chromahub.rhythm.app.shared.presentation.components.player.spatialColorsFromBitmap
 import chromahub.rhythm.app.shared.presentation.components.player.spatialMarquee
@@ -105,6 +110,17 @@ import kotlinx.coroutines.withContext
 import kotlin.math.min
 import kotlin.math.roundToInt
 import androidx.compose.material3.Icon as M3Icon
+
+/** Estilos de texto: SpatialFlow muestra todo en peso regular con la fuente Google Sans Flex redondeada. */
+private object SpatialStyles {
+    val header = TextStyle(fontFamily = SpatialFontFamily, fontWeight = FontWeight.Normal, fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = 0.1.sp)
+    val title = TextStyle(fontFamily = SpatialFontFamily, fontWeight = FontWeight.Normal, fontSize = 28.sp, lineHeight = 36.sp, letterSpacing = 0.sp)
+    val artist = TextStyle(fontFamily = SpatialFontFamily, fontWeight = FontWeight.Normal, fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = 0.25.sp)
+    val chip = TextStyle(fontFamily = SpatialFontFamily, fontWeight = FontWeight.Medium, fontSize = 12.sp, lineHeight = 16.sp, letterSpacing = 0.5.sp)
+    val time = TextStyle(fontFamily = SpatialFontFamily, fontWeight = FontWeight.Normal, fontSize = 12.sp, lineHeight = 16.sp, letterSpacing = 0.4.sp)
+    val badge = TextStyle(fontFamily = SpatialFontFamily, fontWeight = FontWeight.Medium, fontSize = 12.sp, lineHeight = 16.sp, letterSpacing = 0.5.sp)
+}
+
 
 /**
  * Reproductor "Spatial" (copia del Now Playing de SpatialFlow).
@@ -157,6 +173,12 @@ fun SpatialPlayerScreen(
 
     // ---- Colores sacados de la portada (misma formula que SpatialFlow) ----
     val artworkUri = song?.artworkUri
+    val formatLabel = remember(song?.id) {
+        song?.codec?.takeIf { it.isNotBlank() }?.uppercase()
+            ?: song?.path?.substringAfterLast('.', "")
+                ?.takeIf { it.length in 2..5 }
+                ?.uppercase()
+    }
     val colors by produceState(initialValue = SpatialFallbackColors, artworkUri) {
         value = if (artworkUri == null) {
             SpatialFallbackColors
@@ -191,28 +213,36 @@ fun SpatialPlayerScreen(
         Modifier
     }
 
-    BoxWithConstraints(
+    Box(
         modifier = modifier
             .fillMaxSize()
             .drawBehind { drawRect(background.value) }
             .then(swipeModifier)
     ) {
-        val density = LocalDensity.current
-        val statusBarTop = with(density) { WindowInsets.statusBars.getTop(this).toDp() }
-        val navBarBottom = with(density) { WindowInsets.navigationBars.getBottom(this).toDp() }
+        // ---- Fondo: la misma portada, diminuta y ampliada = difuminado muy barato (sin shader de blur) ----
+        SpatialBackdrop(artworkUri = artworkUri, isDark = isDark)
 
-        // Medidas de SpatialFlow: portada = 90% del ancho; en pantallas muy bajitas se reduce lo justo para no cortar los botones.
-        val albumArtSize = minOf(
-            maxWidth * 0.9f,
-            (maxHeight - statusBarTop - navBarBottom - 448.dp).coerceAtLeast(140.dp)
-        )
-        val topGap = ((maxHeight - albumArtSize) / 2f - 220.dp - (statusBarTop + 68.dp)).coerceAtLeast(0.dp)
-
-        Column(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
+        ) {
+        val density = LocalDensity.current
+        val statusBarTop = with(density) { WindowInsets.statusBars.getTop(this).toDp() }
+        val navBarBottom = with(density) { WindowInsets.navigationBars.getBottom(this).toDp() }
+
+        // Medidas EXACTAS de SpatialFlow (FullPlayer): portada = 90% del ancho; los demas elementos conservan sus
+        // alturas y espacios. Igual que en SpatialFlow, si la pantalla es baja los botones de abajo se aprietan.
+        val albumArtSize = maxWidth * 0.9f
+        val screenHeight = maxHeight + statusBarTop + navBarBottom
+        val minTopOffset = statusBarTop + 68.dp
+        val topOffset = ((screenHeight - albumArtSize) / 2f - 220.dp).coerceAtLeast(minTopOffset)
+        val topGap = (topOffset - minTopOffset).coerceAtLeast(0.dp)
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -234,7 +264,7 @@ fun SpatialPlayerScreen(
                 }
                 Text(
                     text = stringResource(R.string.spatial_now_playing),
-                    style = SpatialText.header,
+                    style = SpatialStyles.header,
                     color = contentSecondary
                 )
                 Spacer(modifier = Modifier.size(48.dp))
@@ -297,13 +327,13 @@ fun SpatialPlayerScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 4.dp),
+                    .padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = song?.title ?: stringResource(R.string.spatial_nothing_playing),
-                        style = SpatialText.title,
+                        style = SpatialStyles.title,
                         color = contentColor,
                         maxLines = 1,
                         modifier = Modifier
@@ -313,7 +343,7 @@ fun SpatialPlayerScreen(
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = song?.artist ?: "",
-                        style = SpatialText.artist,
+                        style = SpatialStyles.artist,
                         color = contentSecondary,
                         maxLines = 1,
                         modifier = Modifier
@@ -342,7 +372,7 @@ fun SpatialPlayerScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(8.dp))
 
                 SpatialPillChip(
                     label = stringResource(R.string.spatial_like),
@@ -357,6 +387,14 @@ fun SpatialPlayerScreen(
                     label = stringResource(R.string.spatial_lyrics),
                     imageVector = SpatialIcons.Lyrics,
                     onClick = onOpenLyrics,
+                    contentColor = contentColor,
+                    accentColor = accent,
+                    isDark = isDark
+                )
+                SpatialPillChip(
+                    label = stringResource(R.string.spatial_queue),
+                    symbol = "queue_music",
+                    onClick = onQueueClick,
                     contentColor = contentColor,
                     accentColor = accent,
                     isDark = isDark
@@ -412,13 +450,14 @@ fun SpatialPlayerScreen(
                     isDark = isDark
                 )
 
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(8.dp))
             }
 
             Spacer(modifier = Modifier.height(24.dp))
 
             // ---- Barra ondulada + tiempos (unico lugar que lee el progreso) ----
             SpatialProgressSection(
+                formatLabel = formatLabel,
                 progress = progress,
                 durationMs = durationMs,
                 isPlaying = isPlaying,
@@ -489,11 +528,70 @@ fun SpatialPlayerScreen(
             }
         }
     }
+    }
 }
 
-/** Barra ondulada + tiempo actual + tiempo total. Es lo unico que se recompone con el progreso. */
+/**
+ * Fondo de SpatialFlow adaptado: la misma portada, miniatura de 32 px ampliada a toda la pantalla (se ve
+ * difuminada y con los colores de la portada) y un velo suave para que el texto se lea. Es barato: no usa shaders de blur.
+ */
+@Composable
+private fun SpatialBackdrop(artworkUri: Uri?, isDark: Boolean) {
+    val context = LocalContext.current
+    Crossfade(
+        targetState = artworkUri,
+        animationSpec = tween(600),
+        label = "SpatialBackdrop"
+    ) { uri ->
+        if (uri != null) {
+            val request = remember(uri) {
+                ImageRequest.Builder(context)
+                    .data(uri)
+                    .size(32, 32)
+                    .memoryCacheKey("spatial_backdrop_$uri")
+                    .build()
+            }
+            AsyncImage(
+                model = request,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                filterQuality = FilterQuality.High,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+    val veil = remember(isDark) {
+        if (isDark) {
+            Brush.verticalGradient(
+                0f to Color.Black.copy(alpha = 0.10f),
+                0.55f to Color.Black.copy(alpha = 0.16f),
+                1f to Color.Black.copy(alpha = 0.20f)
+            )
+        } else {
+            Brush.verticalGradient(
+                0f to Color.White.copy(alpha = 0.25f),
+                0.55f to Color.White.copy(alpha = 0.30f),
+                1f to Color.White.copy(alpha = 0.35f)
+            )
+        }
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(veil)
+    )
+}
+
+/** Tiempo como en SpatialFlow: siempre mm:ss con ceros (00:05). */
+private fun spatialTime(ms: Long): String {
+    val total = (ms / 1000L).coerceAtLeast(0L)
+    return String.format(java.util.Locale.getDefault(), "%02d:%02d", total / 60L, total % 60L)
+}
+
+/** Barra ondulada + tiempo actual + formato + tiempo total. Es lo unico que se recompone con el progreso. */
 @Composable
 private fun SpatialProgressSection(
+    formatLabel: String?,
     progress: () -> Float,
     durationMs: Long,
     isPlaying: Boolean,
@@ -514,12 +612,10 @@ private fun SpatialProgressSection(
     val currentSeconds = (shownProgress * durationMs).toLong() / 1000L
     val totalSeconds = durationMs / 1000L
     val remainingSeconds = (totalSeconds - currentSeconds).coerceAtLeast(0L)
-    val currentText = remember(currentSeconds, useHoursFormat) {
-        formatDuration(currentSeconds * 1000L, useHoursFormat)
-    }
-    val totalText = remember(showRemainingTime, totalSeconds, remainingSeconds, useHoursFormat) {
-        if (showRemainingTime) "-" + formatDuration(remainingSeconds * 1000L, useHoursFormat)
-        else formatDuration(totalSeconds * 1000L, useHoursFormat)
+    val currentText = remember(currentSeconds) { spatialTime(currentSeconds * 1000L) }
+    val totalText = remember(showRemainingTime, totalSeconds, remainingSeconds) {
+        if (showRemainingTime) "-" + spatialTime(remainingSeconds * 1000L)
+        else spatialTime(totalSeconds * 1000L)
     }
 
     Column(
@@ -552,16 +648,41 @@ private fun SpatialProgressSection(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = currentText,
-                style = SpatialText.time,
+                style = SpatialStyles.time,
                 color = contentSecondary
             )
+            if (formatLabel != null) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(contentColor.copy(alpha = fillAlpha))
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        icon = MaterialSymbolIcon("audio_file"),
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = contentSecondary,
+                        size = 14.dp
+                    )
+                    Text(
+                        text = formatLabel,
+                        style = SpatialStyles.badge,
+                        color = contentSecondary,
+                        maxLines = 1
+                    )
+                }
+            }
             Text(
                 text = totalText,
-                style = SpatialText.time,
+                style = SpatialStyles.time,
                 color = contentSecondary,
                 modifier = Modifier.clickable { onTotalTimeClick() }
             )
@@ -619,7 +740,7 @@ private fun SpatialPillChip(
             }
             Text(
                 text = label,
-                style = SpatialText.chip,
+                style = SpatialStyles.chip,
                 color = tintColor,
                 maxLines = 1
             )
@@ -696,7 +817,7 @@ private fun SpatialTransportRow(
             .padding(horizontal = 16.dp)
     ) { measurables, constraints ->
         val spacing = 12.dp.roundToPx()
-        val buttonHeight = 76.dp.roundToPx()
+        val buttonHeight = min(76.dp.roundToPx(), constraints.maxHeight).coerceAtLeast(0)
         val total = constraints.maxWidth
         val available = (total - spacing * 2).coerceAtLeast(0)
         val unit = available / 3.2f
