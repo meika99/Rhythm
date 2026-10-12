@@ -15,15 +15,25 @@ licencia (abajo) y con los avisos de copyright en cada archivo derivado.
 
 - `app/src/main/java/chromahub/rhythm/app/shared/presentation/components/player/SpatialWavySlider.kt`
   (adaptado de `WavyMusicSlider.kt`; movido al paquete de Rhythm y renombrado)
+- `app/src/main/java/chromahub/rhythm/app/shared/presentation/components/player/SpatialStyle.kt`
+  (fórmula de colores de `PlayerSharedViewModel.kt` y `PlayerUiComponents.kt`, estilos de texto de `Type.kt`
+  y trazos vectoriales de los iconos del reproductor, convertidos a `ImageVector`)
 - `app/src/main/java/chromahub/rhythm/app/shared/presentation/screens/player/SpatialPlayerScreen.kt`
-  (diseño y funciones de color adaptados de `FullPlayer.kt` y `PlayerUiComponents.kt`; reescrito sobre el
+  (diseño y medidas adaptados de `FullPlayer.kt` y `PlayerUiComponents.kt`; reescrito sobre el
   modelo de datos de Rhythm)
+
+## Fuente tipográfica
+
+`app/src/main/res/font/spatial_google_sans_flex.ttf` es la fuente **Google Sans Flex** (© Google), tomada del
+repositorio de SpatialFlow, donde se distribuye con el proyecto. Se entiende publicada bajo la
+**SIL Open Font License 1.1** (https://openfontlicense.org); consulta la licencia de la fuente si la
+redistribuyes por separado.
 
 ## Marca
 
-Conforme al NOTICE de SpatialFlow, **no** se usan el nombre "SpatialFlow", su logo, icono, capturas
-ni material gráfico, y este proyecto no se presenta como el SpatialFlow oficial ni sugiere afiliación
-con su autor. El nombre "Spatial" se usa únicamente como nombre descriptivo del estilo de pantalla.
+Conforme al NOTICE de SpatialFlow, **no** se usan el nombre "SpatialFlow", su logo, el icono de la app,
+capturas ni material de marca, y este proyecto no se presenta como el SpatialFlow oficial ni sugiere
+afiliación con su autor. El nombre "Spatial" se usa únicamente como nombre descriptivo del estilo de pantalla.
 
 ---
 
