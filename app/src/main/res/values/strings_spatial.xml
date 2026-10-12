@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Textos del estilo de reproductor "Spatial" (ingles; el espanol esta en values-es/strings_spatial.xml) -->
+<resources>
+    <string name="spatial_now_playing">NOW PLAYING</string>
+    <string name="spatial_nothing_playing">Nothing playing</string>
+    <string name="spatial_like">Like</string>
+    <string name="spatial_shuffle">Shuffle</string>
+    <string name="spatial_repeat">Repeat</string>
+    <string name="spatial_lyrics">Lyrics</string>
+    <string name="spatial_queue">Queue</string>
+    <string name="spatial_sleep_timer">Sleep timer</string>
+    <string name="spatial_equalizer">Equalizer</string>
+    <string name="spatial_share">Share</string>
+    <string name="spatial_collapse">Collapse player</string>
+    <string name="spatial_more_options">More options</string>
+    <string name="spatial_open_queue">Open queue</string>
+    <string name="spatial_previous">Previous song</string>
+    <string name="spatial_next">Next song</string>
+    <string name="spatial_play">Play</string>
+    <string name="spatial_pause">Pause</string>
+    <string name="spatial_more">More</string>
+</resources>
