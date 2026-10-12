@@ -95,7 +95,6 @@ fun SpatialWavySlider(
 
     // Infinitely shifting phase when active
     val phaseShiftAnim = remember { Animatable(0f) }
-    val phaseShift = phaseShiftAnim.value
 
 
 
@@ -133,25 +132,9 @@ fun SpatialWavySlider(
     val normalizedValue = if (valueRange.endInclusive == valueRange.start) 0f
         else ((clampedValue - valueRange.start) / (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
 
-    // Smoothly animate seeking/playback progress using M3 Expressive Motion physics
-    val animatedNormalizedValue by animateFloatAsState(
-        targetValue = normalizedValue,
-        animationSpec = if (normalizedValue == 0f) {
-            // Material 3 Slow Spatial spring (Stiffness: 200f, Damping: 0.75f) for hero song transitions
-            spring(
-                dampingRatio = 0.75f,
-                stiffness = 200f
-            )
-        } else {
-            // Material 3 Default Effects spring (Stiffness: 380f, Damping: 1.0f) for linear playback interpolation
-            spring(
-                dampingRatio = Spring.DampingRatioNoBouncy,
-                stiffness = 380f
-            )
-        },
-        label = "ProgressValueAnim"
-    )
-    val renderNormalizedValue = if (isInteracting) normalizedValue else animatedNormalizedValue
+    // Sin resorte: el progreso llega cada 100 ms (menos de 0.2 dp por paso), no hace falta suavizarlo
+    // y el resorte obligaba a recomponer el slider en cada frame.
+    val renderNormalizedValue = normalizedValue
 
     val safeSemanticsStep = semanticsProgressStep.coerceIn(0.005f, 0.25f)
     val semanticNormalizedValue = remember(normalizedValue, safeSemanticsStep) {
@@ -223,6 +206,8 @@ fun SpatialWavySlider(
                     val taperDistancePx = 64.dp.toPx()
 
                     onDrawWithContent {
+                        // Se lee aqui (fase de dibujo): la onda solo redibuja, no recompone el slider en cada frame
+                        val phaseShift = phaseShiftAnim.value
                         val currentProgressPxEndVisual = localTrackStart + localTrackWidth * renderNormalizedValue
                         
                         // 1. Draw Inactive Track
