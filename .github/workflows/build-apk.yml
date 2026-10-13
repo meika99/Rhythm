@@ -1,12 +1,15 @@
 name: Build APK (manual)
 
-# Solo se ejecuta a mano: pestaña "Actions" -> "Build APK (manual)" -> "Run workflow".
+# Solo se ejecuta a mano: pestana "Actions" -> "Build APK (manual)" -> "Run workflow".
+# Compila la version RELEASE (la liviana, sin el lag del debug) solo para arm64-v8a (Motorola G72),
+# con identificador propio (.spatial) para que se instale junto al Rhythm original sin chocar.
 on:
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -22,12 +25,50 @@ jobs:
       - name: Crear private.properties vacio
         run: touch ./private.properties
 
-      - name: Compilar APK debug (sabor github)
-        run: ./gradlew assembleGithubDebug --no-daemon --stacktrace
+      # La misma clave de firma en cada compilacion = puedes actualizar la app SIN desinstalarla.
+      # (GitHub borra la clave guardada si pasan 7 dias sin compilar; en ese caso se crea otra
+      # y habria que desinstalar la app una vez.)
+      - name: Restaurar clave de firma guardada
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: spatial-signing-key-v1
+
+      - name: Crear clave de firma (solo la primera vez)
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -v -keystore ~/.android/debug.keystore \
+              -storepass android -keypass android -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      # Ajustes que solo valen para esta compilacion (el codigo del repositorio no se modifica,
+      # asi "Sync fork" con el Rhythm original nunca da conflictos).
+      - name: Ajustes de compilacion
+        run: |
+          set -e
+          F=app/build.gradle.kts
+          # 1) Solo arm64-v8a y sin APK universal -> un solo APK liviano
+          sed -i 's/include("arm64-v8a", "armeabi-v7a", "x86_64", "x86")/include("arm64-v8a")/' "$F"
+          sed -i 's/isUniversalApk = true.*/isUniversalApk = false/' "$F"
+          if ! grep -qF 'include("arm64-v8a")' "$F" || ! grep -qF 'isUniversalApk = false' "$F"; then
+            echo "AVISO: no se pudo limitar a arm64; se generaran todos los APK (mas pesado)"
+          fi
+          # 2) Identificador propio (.spatial) para no chocar con el Rhythm original
+          sed -i '0,/^        release {/s//        release {\n            applicationIdSuffix = ".spatial"/' "$F"
+          grep -qF 'applicationIdSuffix = ".spatial"' "$F" || { echo "ERROR: no se pudo aplicar el sufijo .spatial"; exit 1; }
+
+      - name: Compilar APK release (sabor github)
+        run: ./gradlew assembleGithubRelease --no-daemon --stacktrace
+
+      - name: Mostrar APK generado
+        run: ls -lh app/build/outputs/apk/github/release/
 
       - name: Subir APK
         uses: actions/upload-artifact@v4
         with:
-          name: Rhythm-Spatial-debug-apk
-          path: app/build/outputs/apk/github/debug/*.apk
+          name: Rhythm-Spatial-release-apk
+          path: app/build/outputs/apk/github/release/*.apk
           retention-days: 30
