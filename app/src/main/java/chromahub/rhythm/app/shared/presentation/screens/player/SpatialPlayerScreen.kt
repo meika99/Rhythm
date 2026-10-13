@@ -23,7 +23,9 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import android.graphics.Bitmap
 import android.net.Uri
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -71,6 +73,8 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -104,8 +108,6 @@ import chromahub.rhythm.app.shared.presentation.components.player.spatialSurface
 import chromahub.rhythm.app.util.ImageUtils
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import coil.size.Precision
-import coil.size.Scale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -221,7 +223,7 @@ fun SpatialPlayerScreen(
             .drawBehind { drawRect(background.value) }
             .then(swipeModifier)
     ) {
-        // ---- Fondo: la misma portada, diminuta y ampliada = difuminado muy barato (sin shader de blur) ----
+        // ---- Fondo: la misma portada, muy difuminada (se calcula una sola vez por cancion) ----
         SpatialBackdrop(artworkUri = artworkUri, isDark = isDark)
 
         BoxWithConstraints(
@@ -533,33 +535,105 @@ fun SpatialPlayerScreen(
     }
 }
 
+// Fondo difuminado: la portada se reduce a un bitmap diminuto (proporcion de pantalla), se desenfoca de verdad
+// (3 pasadas de "box blur" = casi gaussiano) y se estira suave a toda la pantalla. Resultado: manchas de color
+// grandes y SIN pixeles. Se calcula una sola vez por cancion y en segundo plano, asi que no afecta al rendimiento.
+private const val BACKDROP_W = 108
+private const val BACKDROP_H = 240
+private const val BACKDROP_BLUR_RADIUS = 18
+private const val BACKDROP_SATURATION = 1.2f
+
+/** Un paso de desenfoque de caja (horizontal y vertical) sobre un canal; el resultado queda en [data]. */
+private fun spatialBoxBlur(data: IntArray, tmp: IntArray, w: Int, h: Int, r: Int) {
+    val div = 2 * r + 1
+    for (y in 0 until h) {
+        val row = y * w
+        var sum = 0
+        for (i in -r..r) sum += data[row + i.coerceIn(0, w - 1)]
+        for (x in 0 until w) {
+            tmp[row + x] = (sum + div / 2) / div
+            sum += data[row + (x + r + 1).coerceAtMost(w - 1)] - data[row + (x - r).coerceAtLeast(0)]
+        }
+    }
+    for (x in 0 until w) {
+        var sum = 0
+        for (i in -r..r) sum += tmp[i.coerceIn(0, h - 1) * w + x]
+        for (y in 0 until h) {
+            data[y * w + x] = (sum + div / 2) / div
+            sum += tmp[(y + r + 1).coerceAtMost(h - 1) * w + x] - tmp[(y - r).coerceAtLeast(0) * w + x]
+        }
+    }
+}
+
+/** Convierte la portada en el bitmap pequeno y muy desenfocado que se usa de fondo. */
+private fun spatialBlurredBackdrop(source: Bitmap): Bitmap {
+    val w = BACKDROP_W
+    val h = BACKDROP_H
+    val small = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(small)
+    canvas.drawColor(android.graphics.Color.BLACK)
+    val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+    canvas.drawBitmap(source, null, android.graphics.Rect(0, 0, w, h), paint)
+
+    val pixels = IntArray(w * h)
+    small.getPixels(pixels, 0, w, 0, 0, w, h)
+    val red = IntArray(w * h) { (pixels[it] shr 16) and 0xFF }
+    val green = IntArray(w * h) { (pixels[it] shr 8) and 0xFF }
+    val blue = IntArray(w * h) { pixels[it] and 0xFF }
+    val tmp = IntArray(w * h)
+    repeat(3) {
+        spatialBoxBlur(red, tmp, w, h, BACKDROP_BLUR_RADIUS)
+        spatialBoxBlur(green, tmp, w, h, BACKDROP_BLUR_RADIUS)
+        spatialBoxBlur(blue, tmp, w, h, BACKDROP_BLUR_RADIUS)
+    }
+    for (i in 0 until w * h) {
+        val r = red[i].toFloat()
+        val g = green[i].toFloat()
+        val b = blue[i].toFloat()
+        val luma = 0.299f * r + 0.587f * g + 0.114f * b
+        val rr = (luma + (r - luma) * BACKDROP_SATURATION).roundToInt().coerceIn(0, 255)
+        val gg = (luma + (g - luma) * BACKDROP_SATURATION).roundToInt().coerceIn(0, 255)
+        val bb = (luma + (b - luma) * BACKDROP_SATURATION).roundToInt().coerceIn(0, 255)
+        pixels[i] = (0xFF shl 24) or (rr shl 16) or (gg shl 8) or bb
+    }
+    small.setPixels(pixels, 0, w, 0, 0, w, h)
+    return small
+}
+
 /**
- * Fondo de SpatialFlow adaptado: la misma portada, miniatura de 24 px ampliada a toda la pantalla (se ve
- * difuminada y con los colores de la portada) y un velo suave para que el texto se lea. Es barato: no usa shaders de blur.
+ * Fondo de SpatialFlow adaptado: la misma portada pero MUY difuminada (manchas suaves de sus colores, sin pixeles)
+ * y un velo ligero para que el texto se lea.
  */
 @Composable
 private fun SpatialBackdrop(artworkUri: Uri?, isDark: Boolean) {
     val context = LocalContext.current
+    val backdrop by produceState<ImageBitmap?>(initialValue = null, artworkUri) {
+        value = if (artworkUri == null) {
+            null
+        } else {
+            withContext(Dispatchers.IO) {
+                try {
+                    val bitmap = ImageUtils.loadArtworkBitmap(context, artworkUri, 128)
+                    if (bitmap != null) spatialBlurredBackdrop(bitmap).asImageBitmap() else null
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        }
+    }
     Crossfade(
-        targetState = artworkUri,
+        targetState = backdrop,
         animationSpec = tween(600),
         label = "SpatialBackdrop"
-    ) { uri ->
-        if (uri != null) {
-            val request = remember(uri) {
-                ImageRequest.Builder(context)
-                    .data(uri)
-                    .size(24, 24)
-                    .precision(Precision.EXACT)
-                    .scale(Scale.FILL)
-                    .memoryCacheKey("spatial_backdrop24_$uri")
-                    .build()
-            }
-            AsyncImage(
-                model = request,
+    ) { image ->
+        if (image != null) {
+            Image(
+                bitmap = image,
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
-                filterQuality = FilterQuality.High,
+                contentScale = ContentScale.FillBounds,
+                filterQuality = FilterQuality.Low,
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -567,9 +641,9 @@ private fun SpatialBackdrop(artworkUri: Uri?, isDark: Boolean) {
     val veil = remember(isDark) {
         if (isDark) {
             Brush.verticalGradient(
-                0f to Color.Black.copy(alpha = 0.18f),
-                0.55f to Color.Black.copy(alpha = 0.28f),
-                1f to Color.Black.copy(alpha = 0.32f)
+                0f to Color.Black.copy(alpha = 0.04f),
+                0.55f to Color.Black.copy(alpha = 0.10f),
+                1f to Color.Black.copy(alpha = 0.20f)
             )
         } else {
             Brush.verticalGradient(
