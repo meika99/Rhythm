@@ -1306,13 +1306,14 @@ notificationManager.createNotificationChannel(sleepTimerChannel)
     private fun setEqualizerEnabledWithVolumeGuard(enabled: Boolean): Boolean {
         if (!::player.isInitialized || !player.isPlaying) {
             if (!enabled) {
-                // When disabling: just zero bands — don't toggle hardware EQ to avoid DSP burst
+                // Spatial: sin reproducir -> bandas planas y se apaga el efecto de Android (no suena nada, no hay riesgo)
                 withEqualizerSafe("set flat bands on disable", Unit) { eq ->
                     val numberOfBands = eq.numberOfBands.toInt()
                     for (i in 0 until numberOfBands) {
                         eq.setBandLevel(i.toShort(), 0)
                     }
                 }
+                setEqualizerEnabledSafe(false)
                 return false
             }
             return setEqualizerEnabledSafe(true)
@@ -1327,6 +1328,7 @@ notificationManager.createNotificationChannel(sleepTimerChannel)
                         eq.setBandLevel(i.toShort(), 0)
                     }
                 }
+                setEqualizerEnabledSafe(false)
                 return false
             }
             return setEqualizerEnabledSafe(true)
@@ -1361,10 +1363,11 @@ notificationManager.createNotificationChannel(sleepTimerChannel)
                 delay(drainDelay)
                 
                 // 3. Safely toggle the hardware equalizer enabled state while fully silent
-                // When disabling: don't toggle hardware EQ — zeroing bands avoids AudioFlinger DSP reset bursts
+                // Spatial: al apagar tambien se apaga el efecto de Android (ya esta en silencio y con bandas planas)
                 if (enabled) {
                     actualState = setEqualizerEnabledSafe(true)
                 } else {
+                    setEqualizerEnabledSafe(false)
                     actualState = false
                 }
                 
@@ -3496,8 +3499,11 @@ notificationManager.createNotificationChannel(sleepTimerChannel)
                 }
 
                 try {
+                    // Spatial: el ecualizador interno de Android solo se enciende si el usuario usa el de Rhythm.
+                    // Un efecto de Android siempre encendido controla el volumen de la sesion y provoca un salto de volumen
+                    // ("tronido") cuando un ecualizador externo (Poweramp, etc.) se enciende o se apaga.
                     equalizer = android.media.audiofx.Equalizer(0, audioSessionId).apply {
-                        enabled = true
+                        enabled = shouldEnableEqualizer && appSettings.audioRoutingMode.value != "app"
                     }
                     currentAudioEffectsSessionId = audioSessionId
                     Log.d(TAG, "Equalizer initialized with ${equalizer?.numberOfBands} bands for session $audioSessionId")
@@ -3560,19 +3566,21 @@ notificationManager.createNotificationChannel(sleepTimerChannel)
                     setEqualizerEnabledSafe(true)
                 } else {
                     pendingEqualizerLevels = null
-                    // Zero all bands — don't disable hardware EQ to avoid AudioFlinger DSP burst
+                    // Spatial: EQ de Rhythm apagado -> bandas planas y efecto de Android APAGADO (no solo plano),
+                    // asi no interfiere con Poweramp ni otros ecualizadores externos.
                     withEqualizerSafe("set flat bands on load", Unit) { eq ->
                         val numberOfBands = eq.numberOfBands.toInt()
                         for (i in 0 until numberOfBands) {
                             eq.setBandLevel(i.toShort(), 0)
                         }
                     }
-                    // Keep hardware EQ enabled — software controls the "off" state via flat bands
-                    setEqualizerEnabledSafe(true)
+                    if (getEqualizerEnabledSafe()) {
+                        setEqualizerEnabledSafe(false)
+                    }
                 }
-                
+
                 val actualState = getEqualizerEnabledSafe()
-                if (!actualState) {
+                if (shouldBeEnabled && !actualState) {
                     Log.w(TAG, "EQ was unexpectedly disabled after load, re-enabling")
                     setEqualizerEnabledSafe(true)
                 }
@@ -3651,7 +3659,7 @@ notificationManager.createNotificationChannel(sleepTimerChannel)
             }
         } else {
             val actualState = setEqualizerEnabledWithVolumeGuard(false)
-            Log.d(TAG, "Equalizer disabled (hardware kept enabled with flat bands to avoid DSP burst)")
+            Log.d(TAG, "Equalizer disabled (flat bands + Android effect off, actual state: $actualState)")
         }
     }
     
