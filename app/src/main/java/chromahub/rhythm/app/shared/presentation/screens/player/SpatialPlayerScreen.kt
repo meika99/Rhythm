@@ -18,12 +18,14 @@ package chromahub.rhythm.app.shared.presentation.screens.player
 
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import android.graphics.Bitmap
+import android.util.LruCache
 import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -59,6 +61,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -106,10 +109,12 @@ import chromahub.rhythm.app.shared.presentation.components.player.spatialColorsF
 import chromahub.rhythm.app.shared.presentation.components.player.spatialMarquee
 import chromahub.rhythm.app.shared.presentation.components.player.spatialSurfaceColor
 import chromahub.rhythm.app.util.ImageUtils
-import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import coil.size.Precision
+import coil.size.Scale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -164,7 +169,9 @@ fun SpatialPlayerScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     onTotalTimeClick: () -> Unit = {},
-    swipeToDismissEnabled: Boolean = true
+    swipeToDismissEnabled: Boolean = true,
+    previousArtworkUri: Uri? = null,
+    nextArtworkUri: Uri? = null
 ) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
@@ -239,6 +246,13 @@ fun SpatialPlayerScreen(
         // Medidas EXACTAS de SpatialFlow (FullPlayer): portada = 90% del ancho; los demas elementos conservan sus
         // alturas y espacios. Igual que en SpatialFlow, si la pantalla es baja los botones de abajo se aprietan.
         val albumArtSize = maxWidth * 0.9f
+        val coverPx = with(density) { albumArtSize.roundToPx() }
+        // Precarga la portada de la cancion anterior y de la siguiente, para que al cambiar aparezca al instante.
+        LaunchedEffect(previousArtworkUri, nextArtworkUri, coverPx) {
+            delay(300)
+            spatialPrefetchCover(context, previousArtworkUri, coverPx)
+            spatialPrefetchCover(context, nextArtworkUri, coverPx)
+        }
         val screenHeight = maxHeight + statusBarTop + navBarBottom
         val minTopOffset = statusBarTop + 68.dp
         val topOffset = ((screenHeight - albumArtSize) / 2f - 220.dp).coerceAtLeast(minTopOffset)
@@ -287,18 +301,12 @@ fun SpatialPlayerScreen(
                     .clip(artShape)
             ) {
                 if (artworkUri != null) {
-                    val request = remember(artworkUri) {
-                        ImageRequest.Builder(context)
-                            .data(artworkUri)
-                            .crossfade(true)
-                            .memoryCacheKey(artworkUri.toString())
-                            .diskCacheKey(artworkUri.toString())
-                            .build()
-                    }
-                    AsyncImage(
-                        model = request,
+                    SpatialCover(
+                        artworkUri = artworkUri,
                         contentDescription = song?.album,
-                        contentScale = ContentScale.Crop,
+                        placeholderColor = contentColor.copy(alpha = 0.10f),
+                        iconTint = contentSecondary,
+                        sizePx = coverPx,
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
@@ -532,6 +540,90 @@ fun SpatialPlayerScreen(
             }
         }
     }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Portada: se decodifica aqui (no con AsyncImage) y se guarda en un cache pequeno. Asi, al cambiar de cancion la
+// portada nueva se pinta en el MISMO cuadro que el texto y nunca se ve la portada de la cancion anterior.
+// ---------------------------------------------------------------------------------------------
+
+/** Portadas ya decodificadas: la actual y las vecinas. */
+private val spatialCoverCache = LruCache<String, ImageBitmap>(4)
+
+private suspend fun spatialLoadCover(context: android.content.Context, uri: Uri, sizePx: Int): ImageBitmap? =
+    withContext(Dispatchers.IO) {
+        try {
+            val request = ImageRequest.Builder(context)
+                .data(uri)
+                .size(sizePx)
+                .scale(Scale.FILL)
+                .precision(Precision.INEXACT)
+                .build()
+            val result = coil.Coil.imageLoader(context).execute(request)
+            (result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap?.asImageBitmap()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+/** Deja lista en el cache la portada de [uri] (se usa para la cancion anterior y la siguiente). */
+private suspend fun spatialPrefetchCover(context: android.content.Context, uri: Uri?, sizePx: Int) {
+    if (uri == null) return
+    val key = uri.toString()
+    if (spatialCoverCache.get(key) != null) return
+    val loaded = spatialLoadCover(context, uri, sizePx)
+    if (loaded != null) spatialCoverCache.put(key, loaded)
+}
+
+@Composable
+private fun SpatialCover(
+    artworkUri: Uri,
+    contentDescription: String?,
+    placeholderColor: Color,
+    iconTint: Color,
+    sizePx: Int,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val key = artworkUri.toString()
+    // remember(key): al cambiar de cancion el estado se reinicia, asi nunca queda dibujada la portada anterior.
+    var image by remember(key) { mutableStateOf<ImageBitmap?>(spatialCoverCache.get(key)) }
+    var failed by remember(key) { mutableStateOf(false) }
+    val coverAlpha = remember(key) { Animatable(if (image != null) 1f else 0f) }
+    LaunchedEffect(key) {
+        if (image == null) {
+            val loaded = spatialLoadCover(context, artworkUri, sizePx)
+            if (loaded != null) {
+                spatialCoverCache.put(key, loaded)
+                image = loaded
+                coverAlpha.animateTo(1f, tween(140))
+            } else {
+                failed = true
+            }
+        }
+    }
+    Box(modifier = modifier.background(placeholderColor), contentAlignment = Alignment.Center) {
+        val bitmap = image
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = contentDescription,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = coverAlpha.value }
+            )
+        } else if (failed) {
+            M3Icon(
+                imageVector = SpatialIcons.MusicNote,
+                contentDescription = null,
+                tint = iconTint,
+                modifier = Modifier.size(96.dp)
+            )
+        }
     }
 }
 

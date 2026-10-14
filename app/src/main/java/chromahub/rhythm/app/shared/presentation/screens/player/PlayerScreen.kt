@@ -393,6 +393,8 @@ fun PlayerScreen(
                 onSeek = onSeek,
                 onSkipPrevious = onSkipPrevious,
                 onSkipNext = onSkipNext,
+                previousArtworkUri = queue.getOrNull(queuePosition - 2)?.artworkUri,
+                nextArtworkUri = queue.getOrNull(queuePosition)?.artworkUri,
                 onToggleFavorite = onToggleFavorite,
                 onToggleShuffle = onToggleShuffle,
                 onToggleRepeat = onToggleRepeat,
