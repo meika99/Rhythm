@@ -18,7 +18,8 @@ import android.util.Log
  */
 object ExternalEqualizerSession {
     private const val TAG = "ExternalEqSession"
-    private const val MIN_RESEND_MS = 1500L
+    // Reenvia el aviso como maximo cada 30 s (antes 1.5 s) para no molestar al ecualizador externo en cada cambio de cancion
+    private const val MIN_RESEND_MS = 30_000L
 
     private var openedSessionId = 0
     private var lastSentAt = 0L
