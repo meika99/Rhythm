@@ -76,6 +76,7 @@ import chromahub.rhythm.app.activities.RhythmGuardTimeoutActivity
 import androidx.core.net.toUri
 import chromahub.rhythm.app.shared.data.model.PlaybackQualityInfo
 import chromahub.rhythm.app.util.AudioQualityDetector
+import chromahub.rhythm.app.util.ExternalEqualizerSession
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -1022,6 +1023,10 @@ notificationManager.createNotificationChannel(sleepTimerChannel)
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    // Vuelve a avisar la sesion de audio (por si el ecualizador externo se abrio despues que Rhythm)
+                    ExternalEqualizerSession.open(applicationContext, getPlayerAudioSessionId())
+                }
                 if (playbackState == Player.STATE_READY && getPlayerAudioSessionId() != 0) {
                     val currentSessionId = getPlayerAudioSessionId()
                     val needsInit = !audioEffectsInitialized || currentAudioEffectsSessionId != currentSessionId
@@ -2436,6 +2441,7 @@ notificationManager.createNotificationChannel(sleepTimerChannel)
     override fun onDestroy() {
         instanceForWidgetAndLyricsOnly = null
         Log.d(TAG, "Service being destroyed")
+        ExternalEqualizerSession.close(applicationContext)
 
         // Persist final playback position and index on destroy
         if (::player.isInitialized && appSettings.queuePersistenceEnabled.value) {
@@ -3447,6 +3453,9 @@ notificationManager.createNotificationChannel(sleepTimerChannel)
             Log.w(TAG, "Invalid audio session ID (0), skipping effects initialization")
             return
         }
+
+        // Avisa a ecualizadores externos (Poweramp Equalizer, etc.) de la sesion de audio de Rhythm
+        ExternalEqualizerSession.open(applicationContext, requestedSessionId)
 
         pendingAudioEffectsSessionId = requestedSessionId
 
