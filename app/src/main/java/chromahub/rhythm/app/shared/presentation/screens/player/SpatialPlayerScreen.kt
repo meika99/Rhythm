@@ -1358,10 +1358,14 @@ private fun SpatialProgressSection(
  * (mas arriba, mas tenue en medio, un poco mas abajo, como el grosor de un cristal) y, aparte, un borde luminoso en diagonal.
  * Solo dibuja degradados: el fondo se sigue viendo y el boton se distingue en cualquier portada.
  */
+private const val SPATIAL_GLASS_FILL_SCALE = 0.50f   // intensidad del relleno (1 = muy llamativo, 0 = invisible)
+private const val SPATIAL_GLASS_RIM_SCALE = 0.55f    // intensidad del borde luminoso
+
 private fun spatialGlassFill(isDark: Boolean, tint: Color, strength: Float = 1f): Brush {
-    val top = ((if (isDark) 0.24f else 0.58f) * strength).coerceAtMost(1f)
-    val mid = ((if (isDark) 0.09f else 0.30f) * strength).coerceAtMost(1f)
-    val bottom = ((if (isDark) 0.15f else 0.44f) * strength).coerceAtMost(1f)
+    val k = strength * SPATIAL_GLASS_FILL_SCALE
+    val top = ((if (isDark) 0.24f else 0.58f) * k).coerceAtMost(1f)
+    val mid = ((if (isDark) 0.09f else 0.30f) * k).coerceAtMost(1f)
+    val bottom = ((if (isDark) 0.15f else 0.44f) * k).coerceAtMost(1f)
     return Brush.verticalGradient(
         0.00f to tint.copy(alpha = top),
         0.55f to tint.copy(alpha = mid),
@@ -1371,10 +1375,10 @@ private fun spatialGlassFill(isDark: Boolean, tint: Color, strength: Float = 1f)
 
 /** Borde de cristal: brillo fuerte arriba a la izquierda, casi nada en medio y un reflejo menor abajo a la derecha. */
 private fun spatialGlassRim(isDark: Boolean, tint: Color): Brush = Brush.linearGradient(
-    0.00f to tint.copy(alpha = if (isDark) 0.75f else 0.95f),
-    0.35f to tint.copy(alpha = if (isDark) 0.14f else 0.30f),
-    0.65f to tint.copy(alpha = if (isDark) 0.08f else 0.20f),
-    1.00f to tint.copy(alpha = if (isDark) 0.45f else 0.70f)
+    0.00f to tint.copy(alpha = (if (isDark) 0.75f else 0.95f) * SPATIAL_GLASS_RIM_SCALE),
+    0.35f to tint.copy(alpha = (if (isDark) 0.14f else 0.30f) * SPATIAL_GLASS_RIM_SCALE),
+    0.65f to tint.copy(alpha = (if (isDark) 0.08f else 0.20f) * SPATIAL_GLASS_RIM_SCALE),
+    1.00f to tint.copy(alpha = (if (isDark) 0.45f else 0.70f) * SPATIAL_GLASS_RIM_SCALE)
 )
 
 /** Pastilla redondeada con icono y texto (cristal liquido); se resalta con el color de acento cuando esta activa. */
