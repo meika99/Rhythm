@@ -25,7 +25,11 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import android.graphics.Bitmap
+import android.provider.Settings
 import android.util.LruCache
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -61,6 +65,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.FloatState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -68,17 +74,20 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -93,6 +102,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -177,7 +187,9 @@ fun SpatialPlayerScreen(
     onTotalTimeClick: () -> Unit = {},
     swipeToDismissEnabled: Boolean = true,
     previousArtworkUri: Uri? = null,
-    nextArtworkUri: Uri? = null
+    nextArtworkUri: Uri? = null,
+    /** false cuando el reproductor esta replegado (solo se ve el mini reproductor): el fondo deja de animarse. */
+    isVisible: Boolean = true
 ) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
@@ -237,7 +249,7 @@ fun SpatialPlayerScreen(
             .then(swipeModifier)
     ) {
         // ---- Fondo: la misma portada, muy difuminada (se calcula una sola vez por cancion) ----
-        SpatialBackdrop(artworkUri = artworkUri, isDark = isDark)
+        SpatialBackdrop(artworkUri = artworkUri, isDark = isDark, isVisible = isVisible)
 
         BoxWithConstraints(
             modifier = Modifier
@@ -1074,39 +1086,159 @@ private suspend fun spatialPrefetchAurora(context: android.content.Context, uri:
     spatialLoadAurora(context, uri, isDark)
 }
 
+// ---- Fase 2: movimiento y orbes de luz (ajustables aqui) ----
+private const val AUR_PERIOD_MS = 48_000f        // vuelta completa del reloj; cada movimiento es un numero ENTERO de ciclos de esta vuelta, asi el bucle cierra sin saltos
+private const val AUR_FRAME_NS = 30_000_000L     // ~30 fps: se ve igual de suave en un fondo difuso y gasta la mitad que 60
+private const val AUR_FIELD_OVERSCAN = 1.20f     // el campo se dibuja 20 % mas grande que la pantalla para poder moverlo sin que asomen bordes
+private const val AUR_DRIFT_X = 0.070f           // vaiven horizontal del campo (fraccion del ancho); 2 ciclos = 24 s por ciclo
+private const val AUR_DRIFT_Y = 0.035f           // vaiven vertical del campo (fraccion del alto); 3 ciclos = 16 s por ciclo
+private const val AUR_ORB_A_RADIUS = 0.75f       // radio de los orbes (fraccion del ancho)
+private const val AUR_ORB_B_RADIUS = 0.60f
+private const val AUR_ORB_A_ALPHA = 0.52f        // fuerza del orbe en su centro
+private const val AUR_ORB_B_ALPHA = 0.42f
+private const val AUR_TWO_PI = 6.2831855f
+
+/** Seno de [n] ciclos enteros por vuelta del reloj (n entero = el movimiento cierra exacto al terminar la vuelta). */
+private fun auroraCycle(phase: Float, n: Int, offset: Float = 0f): Float =
+    sin(AUR_TWO_PI * (n * phase + offset))
+
+/** Orbe de luz: el mismo color de la portada, fuerte al centro y desvaneciendose (misma tinta al desvanecer: no ensucia). */
+private fun auroraOrbBrush(color: Color, strength: Float, radius: Float): Brush = Brush.radialGradient(
+    colorStops = arrayOf(
+        0.00f to color.copy(alpha = strength),
+        0.35f to color.copy(alpha = strength * 0.62f),
+        0.70f to color.copy(alpha = strength * 0.18f),
+        1.00f to color.copy(alpha = 0f)
+    ),
+    center = Offset.Zero,
+    radius = radius
+)
+
+/** true mientras la pantalla esta encendida y la app a la vista (ON_START..ON_STOP). */
 @Composable
-private fun SpatialAuroraLayer(aurora: SpatialAurora, modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier.drawWithCache {
-            val baseBrush = Brush.verticalGradient(listOf(aurora.top, aurora.mid, aurora.deep))
-            onDrawBehind {
-                // degradado base + campo de color estirado a toda la pantalla (el estirado suave ya da el desenfoque)
-                drawRect(brush = baseBrush)
-                drawImage(
-                    image = aurora.field,
-                    dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
-                    alpha = 0.92f,
-                    filterQuality = FilterQuality.Low
-                )
+private fun rememberLifecycleStarted(): Boolean {
+    val owner = LocalLifecycleOwner.current
+    var started by remember(owner) {
+        mutableStateOf(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+    }
+    DisposableEffect(owner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) started = true
+            else if (event == Lifecycle.Event.ON_STOP) started = false
+        }
+        owner.lifecycle.addObserver(observer)
+        onDispose { owner.lifecycle.removeObserver(observer) }
+    }
+    return started
+}
+
+/**
+ * Reloj unico del fondo (0..1 por vuelta). Solo corre mientras [running]; al parar se queda donde estaba y al volver sigue desde ahi.
+ * Nadie lo lee en composicion: solo se lee al dibujar, asi cada tic redibuja unicamente el fondo (nada se recompone).
+ */
+@Composable
+private fun rememberAuroraPhase(running: Boolean): FloatState {
+    val phase = remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(running) {
+        if (!running) return@LaunchedEffect
+        var last = -1L
+        var elapsed = phase.floatValue * AUR_PERIOD_MS
+        while (true) {
+            withFrameNanos { now ->
+                if (last < 0L) {
+                    last = now
+                } else if (now - last >= AUR_FRAME_NS) {
+                    elapsed = (elapsed + (now - last) / 1_000_000f) % AUR_PERIOD_MS
+                    last = now
+                    phase.floatValue = elapsed / AUR_PERIOD_MS
+                }
             }
         }
+    }
+    return phase
+}
+
+@Composable
+private fun SpatialAuroraLayer(aurora: SpatialAurora, phase: FloatState, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .graphicsLayer { }   // capa propia: al animar solo se redibuja el fondo, no todo el reproductor
+            .drawWithCache {
+                val w = size.width
+                val h = size.height
+                val baseBrush = Brush.verticalGradient(listOf(aurora.top, aurora.mid, aurora.deep))
+                // campo mas grande que la pantalla y centrado (para poder moverlo sin mostrar bordes)
+                val fieldW = (w * AUR_FIELD_OVERSCAN).roundToInt()
+                val fieldH = (h * AUR_FIELD_OVERSCAN).roundToInt()
+                val fieldSize = IntSize(fieldW, fieldH)
+                val fieldOffset = IntOffset(-((fieldW - w.roundToInt()) / 2), -((fieldH - h.roundToInt()) / 2))
+                val radiusA = w * AUR_ORB_A_RADIUS
+                val radiusB = w * AUR_ORB_B_RADIUS
+                val orbA = auroraOrbBrush(aurora.lightA, AUR_ORB_A_ALPHA, radiusA)
+                val orbB = auroraOrbBrush(aurora.lightB, AUR_ORB_B_ALPHA, radiusB)
+                onDrawBehind {
+                    val p = phase.floatValue   // se lee aqui (fase de dibujo): el tic no recompone nada
+                    // 1) degradado base del matiz principal
+                    drawRect(brush = baseBrush)
+                    // 2) campo de color de la portada con vaiven suave (seno: sin aceleraciones raras)
+                    val dx = w * AUR_DRIFT_X * auroraCycle(p, 2)
+                    val dy = h * AUR_DRIFT_Y * auroraCycle(p, 3, 0.25f)
+                    withTransform({ translate(left = dx, top = dy) }) {
+                        drawImage(
+                            image = aurora.field,
+                            dstOffset = fieldOffset,
+                            dstSize = fieldSize,
+                            alpha = 0.92f,
+                            filterQuality = FilterQuality.Low
+                        )
+                    }
+                    // 3) orbe A: franja superior (sobre la portada), recorre el ancho y "respira"
+                    val breathe = 1f + 0.10f * auroraCycle(p, 3)
+                    val ax = w * (0.5f + 0.34f * auroraCycle(p, 1))
+                    val ay = h * (0.14f + 0.07f * auroraCycle(p, 2, 0.25f))
+                    withTransform({
+                        translate(left = ax, top = ay)
+                        scale(scaleX = breathe, scaleY = breathe, pivot = Offset.Zero)
+                    }) {
+                        drawCircle(brush = orbA, radius = radiusA, center = Offset.Zero)
+                    }
+                    // 4) orbe B: zona bajo la portada, va al reves
+                    val breatheB = 2f - breathe
+                    val bx = w * (0.5f - 0.30f * auroraCycle(p, 2, 0.1f))
+                    val by = h * (0.64f + 0.08f * auroraCycle(p, 1, 0.5f))
+                    withTransform({
+                        translate(left = bx, top = by)
+                        scale(scaleX = breatheB, scaleY = breatheB, pivot = Offset.Zero)
+                    }) {
+                        drawCircle(brush = orbB, radius = radiusB, center = Offset.Zero)
+                    }
+                }
+            }
     )
 }
 
-/** Fondo del reproductor con los colores de la portada. Cambia con fundido cruzado al cambiar de cancion. */
+/**
+ * Fondo del reproductor con los colores de la portada. Cambia con fundido cruzado al cambiar de cancion.
+ * Se mueve solo si el reproductor se ve ([isVisible]), la app esta a la vista y el sistema no tiene las animaciones apagadas.
+ */
 @Composable
-private fun SpatialBackdrop(artworkUri: Uri?, isDark: Boolean) {
+private fun SpatialBackdrop(artworkUri: Uri?, isDark: Boolean, isVisible: Boolean) {
     val context = LocalContext.current
     val aurora by produceState<SpatialAurora?>(initialValue = null, artworkUri, isDark) {
         value = if (artworkUri == null) null else spatialLoadAurora(context, artworkUri, isDark)
     }
+    val animationsOn = remember {
+        Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) != 0f
+    }
+    val started = rememberLifecycleStarted()
+    val phase = rememberAuroraPhase(running = isVisible && started && animationsOn)
     Crossfade(
         targetState = aurora,
         animationSpec = tween(700),
         label = "SpatialAurora"
     ) { current ->
         if (current != null) {
-            SpatialAuroraLayer(aurora = current, modifier = Modifier.fillMaxSize())
+            SpatialAuroraLayer(aurora = current, phase = phase, modifier = Modifier.fillMaxSize())
         }
     }
 }
