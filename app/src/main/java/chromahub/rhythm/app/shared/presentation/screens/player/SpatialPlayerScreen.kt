@@ -31,8 +31,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import android.net.Uri
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
@@ -1351,7 +1353,31 @@ private fun SpatialProgressSection(
     }
 }
 
-/** Pastilla redondeada con icono y texto; se resalta con el color de acento cuando esta activa. */
+/**
+ * "Liquid glass" barato (sin desenfoque en vivo, ligero para el Helio G99): relleno translucido que aclara el fondo
+ * (mas arriba, mas tenue en medio, un poco mas abajo, como el grosor de un cristal) y, aparte, un borde luminoso en diagonal.
+ * Solo dibuja degradados: el fondo se sigue viendo y el boton se distingue en cualquier portada.
+ */
+private fun spatialGlassFill(isDark: Boolean, tint: Color, strength: Float = 1f): Brush {
+    val top = ((if (isDark) 0.24f else 0.58f) * strength).coerceAtMost(1f)
+    val mid = ((if (isDark) 0.09f else 0.30f) * strength).coerceAtMost(1f)
+    val bottom = ((if (isDark) 0.15f else 0.44f) * strength).coerceAtMost(1f)
+    return Brush.verticalGradient(
+        0.00f to tint.copy(alpha = top),
+        0.55f to tint.copy(alpha = mid),
+        1.00f to tint.copy(alpha = bottom)
+    )
+}
+
+/** Borde de cristal: brillo fuerte arriba a la izquierda, casi nada en medio y un reflejo menor abajo a la derecha. */
+private fun spatialGlassRim(isDark: Boolean, tint: Color): Brush = Brush.linearGradient(
+    0.00f to tint.copy(alpha = if (isDark) 0.75f else 0.95f),
+    0.35f to tint.copy(alpha = if (isDark) 0.14f else 0.30f),
+    0.65f to tint.copy(alpha = if (isDark) 0.08f else 0.20f),
+    1.00f to tint.copy(alpha = if (isDark) 0.45f else 0.70f)
+)
+
+/** Pastilla redondeada con icono y texto (cristal liquido); se resalta con el color de acento cuando esta activa. */
 @Composable
 private fun SpatialPillChip(
     label: String,
@@ -1363,18 +1389,21 @@ private fun SpatialPillChip(
     imageVector: ImageVector? = null,
     symbol: String? = null
 ) {
-    val backgroundColor = if (isSelected) {
-        accentColor.copy(alpha = if (isDark) 0.25f else 0.18f)
-    } else {
-        contentColor.copy(alpha = if (isDark) 0.08f else 0.06f)
+    // Cristal liquido: relleno translucido claro + borde luminoso; el fondo se sigue viendo detras
+    val glassFill = remember(isDark, isSelected, accentColor) {
+        if (isSelected) spatialGlassFill(isDark, accentColor, 1.25f) else spatialGlassFill(isDark, Color.White)
     }
-    val tintColor = if (isSelected) accentColor else contentColor.copy(alpha = 0.8f)
+    val glassRim = remember(isDark, isSelected, accentColor) {
+        spatialGlassRim(isDark, if (isSelected) accentColor else Color.White)
+    }
+    val tintColor = if (isSelected) accentColor else contentColor.copy(alpha = 0.95f)
 
     Box(
         modifier = Modifier
             .height(36.dp)
             .clip(CircleShape)
-            .background(backgroundColor)
+            .background(glassFill, CircleShape)
+            .border(1.dp, glassRim, CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.CenterStart
     ) {
@@ -1440,7 +1469,6 @@ private fun SpatialTransportRow(
     val grow1 = animateFloatAsState(if (pressed1) 1f else 0f, growSpec, label = "SpatialGrowPlay")
     val grow2 = animateFloatAsState(if (pressed2) 1f else 0f, growSpec, label = "SpatialGrowNext")
 
-    val neutral = contentColor.copy(alpha = fillAlpha)
     val playContent = if (isDark) Color(0xFF1C1B1F) else Color.White
 
     Layout(
@@ -1448,11 +1476,13 @@ private fun SpatialTransportRow(
             SpatialTransportButton(
                 onClick = onPrevious,
                 interactionSource = source0,
-                containerColor = neutral,
+                containerColor = Color.Transparent,
                 contentColor = contentColor,
                 icon = SpatialIcons.SkipPrevious,
                 iconSize = 36.dp,
-                contentDescription = previousLabel
+                contentDescription = previousLabel,
+                glass = true,
+                isDark = isDark
             )
             SpatialTransportButton(
                 onClick = onPlayPause,
@@ -1466,11 +1496,13 @@ private fun SpatialTransportRow(
             SpatialTransportButton(
                 onClick = onNext,
                 interactionSource = source2,
-                containerColor = neutral,
+                containerColor = Color.Transparent,
                 contentColor = contentColor,
                 icon = SpatialIcons.SkipNext,
                 iconSize = 36.dp,
-                contentDescription = nextLabel
+                contentDescription = nextLabel,
+                glass = true,
+                isDark = isDark
             )
         },
         modifier = Modifier
@@ -1536,7 +1568,9 @@ private fun SpatialTransportButton(
     contentColor: Color,
     icon: ImageVector,
     iconSize: Dp,
-    contentDescription: String
+    contentDescription: String,
+    glass: Boolean = false,
+    isDark: Boolean = true
 ) {
     val isPressed by interactionSource.collectIsPressedAsState()
     val cornerRadius by animateDpAsState(
@@ -1547,15 +1581,19 @@ private fun SpatialTransportButton(
         ),
         label = "SpatialCorner"
     )
+    val glassFill = remember(isDark) { spatialGlassFill(isDark, Color.White) }
+    val glassRim = remember(isDark) { spatialGlassRim(isDark, Color.White) }
+    val shape = RoundedCornerShape(cornerRadius)
     Button(
         onClick = onClick,
-        modifier = Modifier.fillMaxSize(),
+        modifier = if (glass) Modifier.fillMaxSize().background(glassFill, shape) else Modifier.fillMaxSize(),
         interactionSource = interactionSource,
-        shape = RoundedCornerShape(cornerRadius),
+        shape = shape,
         colors = ButtonDefaults.buttonColors(
             containerColor = containerColor,
             contentColor = contentColor
         ),
+        border = if (glass) BorderStroke(1.dp, glassRim) else null,
         contentPadding = PaddingValues(0.dp)
     ) {
         Box(
