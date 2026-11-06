@@ -72,6 +72,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -92,6 +93,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -116,6 +118,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.min
 import kotlin.math.roundToInt
 import androidx.compose.material3.Icon as M3Icon
@@ -248,10 +254,12 @@ fun SpatialPlayerScreen(
         val albumArtSize = maxWidth * 0.9f
         val coverPx = with(density) { albumArtSize.roundToPx() }
         // Precarga la portada de la cancion anterior y de la siguiente, para que al cambiar aparezca al instante.
-        LaunchedEffect(previousArtworkUri, nextArtworkUri, coverPx) {
+        LaunchedEffect(previousArtworkUri, nextArtworkUri, coverPx, isDark) {
             delay(300)
             spatialPrefetchCover(context, previousArtworkUri, coverPx)
             spatialPrefetchCover(context, nextArtworkUri, coverPx)
+            spatialPrefetchAurora(context, previousArtworkUri, isDark)
+            spatialPrefetchAurora(context, nextArtworkUri, isDark)
         }
         val screenHeight = maxHeight + statusBarTop + navBarBottom
         val minTopOffset = statusBarTop + 68.dp
@@ -627,14 +635,6 @@ private fun SpatialCover(
     }
 }
 
-// Fondo difuminado: la portada se reduce a un bitmap diminuto (proporcion de pantalla), se desenfoca de verdad
-// (3 pasadas de "box blur" = casi gaussiano) y se estira suave a toda la pantalla. Resultado: manchas de color
-// grandes y SIN pixeles. Se calcula una sola vez por cancion y en segundo plano, asi que no afecta al rendimiento.
-private const val BACKDROP_W = 108
-private const val BACKDROP_H = 240
-private const val BACKDROP_BLUR_RADIUS = 18
-private const val BACKDROP_SATURATION = 1.2f
-
 /** Un paso de desenfoque de caja (horizontal y vertical) sobre un canal; el resultado queda en [data]. */
 private fun spatialBoxBlur(data: IntArray, tmp: IntArray, w: Int, h: Int, r: Int) {
     val div = 2 * r + 1
@@ -657,99 +657,458 @@ private fun spatialBoxBlur(data: IntArray, tmp: IntArray, w: Int, h: Int, r: Int
     }
 }
 
-/** Convierte la portada en el bitmap pequeno y muy desenfocado que se usa de fondo. */
-private fun spatialBlurredBackdrop(source: Bitmap): Bitmap {
-    val w = BACKDROP_W
-    val h = BACKDROP_H
-    val small = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-    val canvas = android.graphics.Canvas(small)
-    canvas.drawColor(android.graphics.Color.BLACK)
-    val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
-    canvas.drawBitmap(source, null, android.graphics.Rect(0, 0, w, h), paint)
+// ---------------------------------------------------------------------------------------------
+// Fondo "aurora" - FASE 1: extraccion de colores (sin movimiento, sin luces animadas).
+// SOLO colores de la portada. Una vez por cancion (en segundo plano) se calcula:
+//  - un campo de color de 64x112: cada zona toma UN matiz real de la portada (nunca se promedian matices opuestos,
+//    asi no salen grises ni manchas sucias) con colores vivos y agradables;
+//  - tres colores base (del matiz principal) y dos luces (para la siguiente fase; aun no se dibujan).
+// ---------------------------------------------------------------------------------------------
 
-    val pixels = IntArray(w * h)
-    small.getPixels(pixels, 0, w, 0, 0, w, h)
-    val red = IntArray(w * h) { (pixels[it] shr 16) and 0xFF }
-    val green = IntArray(w * h) { (pixels[it] shr 8) and 0xFF }
-    val blue = IntArray(w * h) { pixels[it] and 0xFF }
-    val tmp = IntArray(w * h)
-    repeat(3) {
-        spatialBoxBlur(red, tmp, w, h, BACKDROP_BLUR_RADIUS)
-        spatialBoxBlur(green, tmp, w, h, BACKDROP_BLUR_RADIUS)
-        spatialBoxBlur(blue, tmp, w, h, BACKDROP_BLUR_RADIUS)
-    }
-    for (i in 0 until w * h) {
-        val r = red[i].toFloat()
-        val g = green[i].toFloat()
-        val b = blue[i].toFloat()
-        val luma = 0.299f * r + 0.587f * g + 0.114f * b
-        val rr = (luma + (r - luma) * BACKDROP_SATURATION).roundToInt().coerceIn(0, 255)
-        val gg = (luma + (g - luma) * BACKDROP_SATURATION).roundToInt().coerceIn(0, 255)
-        val bb = (luma + (b - luma) * BACKDROP_SATURATION).roundToInt().coerceIn(0, 255)
-        pixels[i] = (0xFF shl 24) or (rr shl 16) or (gg shl 8) or bb
-    }
-    small.setPixels(pixels, 0, w, 0, 0, w, h)
-    return small
+// Tamanos del calculo
+private const val AUR_SRC = 128
+private const val AUR_GW = 32
+private const val AUR_GH = 56
+private const val AUR_OUT_W = 64
+private const val AUR_OUT_H = 112
+
+// Ajustes de color (tema oscuro). Aqui se retoca el aspecto sin tocar el resto del codigo.
+private const val AUR_SAT_MIN = 0.70f        // saturacion minima de las zonas de color (mas alto = mas vivo)
+private const val AUR_SAT_GAIN = 1.5f
+private const val AUR_SAT_ADD = 0.18f
+private const val AUR_VAL_BASE = 0.30f
+private const val AUR_VAL_GAIN = 0.55f
+private const val AUR_VAL_MIN = 0.42f        // brillo minimo / maximo de las zonas de color
+private const val AUR_VAL_MAX = 0.88f
+private const val AUR_LUM_CAP_FIELD = 0.27f  // luminancia maxima del campo (amarillos y verdes no quedan blancos y el texto se lee)
+private const val AUR_LUM_CAP_LIGHT = 0.30f  // luminancia maxima de las luces
+private const val AUR_GEXP = 0.2f            // cuanto pesa el matiz dominante (menor = mas variedad de matices)
+private const val AUR_WIDE_MIX = 0.10f
+private const val AUR_S0 = 0.05f             // los grises/blancos casi no cuentan: rampa de saturacion
+private const val AUR_S1 = 0.25f
+private const val AUR_NEIGHBORS = 0.4f
+private const val AUR_SHADE_START = 0.35f    // desde esta altura (0..1) el campo se oscurece suavemente...
+private const val AUR_SHADE_END = 0.62f      // ...hasta este factor abajo (mismo matiz, solo mas oscuro; no es negro)
+private const val AUR_MAX_HUE_SPAN = 110f   // matices mas lejos que esto del principal (opuestos) se descartan: mezclados ensucian
+
+private data class SpatialAurora(
+    val field: ImageBitmap,
+    val top: Color,
+    val mid: Color,
+    val deep: Color,
+    val lightA: Color,
+    val lightB: Color
+)
+
+private fun auroraRamp(x: Float, a: Float, b: Float): Float {
+    val t = ((x - a) / (b - a)).coerceIn(0f, 1f)
+    return t * t * (3f - 2f * t)
 }
 
-/**
- * Fondo de SpatialFlow adaptado: la misma portada pero MUY difuminada (manchas suaves de sus colores, sin pixeles)
- * y un velo ligero para que el texto se lea.
- */
-@Composable
-private fun SpatialBackdrop(artworkUri: Uri?, isDark: Boolean) {
-    val context = LocalContext.current
-    val backdrop by produceState<ImageBitmap?>(initialValue = null, artworkUri) {
-        value = if (artworkUri == null) {
-            null
-        } else {
-            withContext(Dispatchers.IO) {
-                try {
-                    val bitmap = ImageUtils.loadArtworkBitmap(context, artworkUri, 128)
-                    if (bitmap != null) spatialBlurredBackdrop(bitmap).asImageBitmap() else null
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    null
-                }
+private fun auroraLinear(c: Float): Float =
+    if (c <= 0.04045f) c / 12.92f else Math.pow(((c + 0.055f) / 1.055f).toDouble(), 2.4).toFloat()
+
+private fun auroraLuminance(r: Float, g: Float, b: Float): Float =
+    0.2126f * auroraLinear(r) + 0.7152f * auroraLinear(g) + 0.0722f * auroraLinear(b)
+
+/** HSV (h 0..360, s y v 0..1) -> RGB 0..1 en out[0..2]. */
+private fun auroraHsv(h: Float, s: Float, v: Float, out: FloatArray) {
+    val hh = ((h % 360f) + 360f) % 360f
+    val c = v * s
+    val x = c * (1f - abs((hh / 60f) % 2f - 1f))
+    val m = v - c
+    var r = 0f
+    var g = 0f
+    var b = 0f
+    when ((hh / 60f).toInt() % 6) {
+        0 -> { r = c; g = x }
+        1 -> { r = x; g = c }
+        2 -> { g = c; b = x }
+        3 -> { g = x; b = c }
+        4 -> { r = x; b = c }
+        else -> { r = c; b = x }
+    }
+    out[0] = r + m
+    out[1] = g + m
+    out[2] = b + m
+}
+
+/** Igual que [auroraHsv], pero baja el brillo hasta que la luminancia no pase de [cap] (amarillos y cianes no quedan blancos). */
+private fun auroraHsvCapped(h: Float, s: Float, v: Float, cap: Float, out: FloatArray) {
+    var value = v
+    repeat(14) {
+        auroraHsv(h, s, value, out)
+        if (auroraLuminance(out[0], out[1], out[2]) <= cap) return
+        value *= 0.93f
+    }
+    auroraHsv(h, s, value, out)
+}
+
+private fun auroraHueDistance(a: Float, b: Float): Float {
+    val d = abs(a - b) % 360f
+    return minOf(d, 360f - d)
+}
+
+private fun auroraMix(c: Color, gray: Float, k: Float): Color =
+    Color(
+        red = (gray * (1f - k) + c.red * k).coerceIn(0f, 1f),
+        green = (gray * (1f - k) + c.green * k).coerceIn(0f, 1f),
+        blue = (gray * (1f - k) + c.blue * k).coerceIn(0f, 1f)
+    )
+
+/** Desenfoque de caja (borde fijo), [passes] pasadas, sobre una rejilla w x h de decimales. */
+private fun auroraBlur(data: FloatArray, tmp: FloatArray, w: Int, h: Int, r: Int, passes: Int) {
+    val div = (2 * r + 1).toFloat()
+    repeat(passes) {
+        for (y in 0 until h) {
+            val row = y * w
+            var sum = 0f
+            for (i in -r..r) sum += data[row + i.coerceIn(0, w - 1)]
+            for (x in 0 until w) {
+                tmp[row + x] = sum / div
+                sum += data[row + (x + r + 1).coerceAtMost(w - 1)] - data[row + (x - r).coerceAtLeast(0)]
+            }
+        }
+        for (x in 0 until w) {
+            var sum = 0f
+            for (i in -r..r) sum += tmp[i.coerceIn(0, h - 1) * w + x]
+            for (y in 0 until h) {
+                data[y * w + x] = sum / div
+                sum += tmp[(y + r + 1).coerceAtMost(h - 1) * w + x] - tmp[(y - r).coerceAtLeast(0) * w + x]
             }
         }
     }
-    Crossfade(
-        targetState = backdrop,
-        animationSpec = tween(600),
-        label = "SpatialBackdrop"
-    ) { image ->
-        if (image != null) {
-            Image(
-                bitmap = image,
-                contentDescription = null,
-                contentScale = ContentScale.FillBounds,
-                filterQuality = FilterQuality.Low,
-                modifier = Modifier.fillMaxSize()
-            )
+}
+
+/** Convierte la portada en el fondo aurora (campo de color + colores base + luces). Todo con colores de la portada. */
+private fun spatialAuroraFromBitmap(source: Bitmap, isDark: Boolean): SpatialAurora {
+    val sw = AUR_SRC
+    val sh = AUR_SRC
+    val n = sw * sh
+
+    // 1) Portada reducida a 128x128 (sirve tambien con bitmaps "hardware")
+    val scaled = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
+    run {
+        val canvas = android.graphics.Canvas(scaled)
+        canvas.drawColor(android.graphics.Color.BLACK)
+        val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+        canvas.drawBitmap(source, null, android.graphics.Rect(0, 0, sw, sh), paint)
+    }
+    val px = IntArray(n)
+    scaled.getPixels(px, 0, sw, 0, 0, sw, sh)
+
+    // 2) Por pixel: matiz y peso. Blancos, grises y negros casi no pesan (evita fondos "sucios").
+    val hue = FloatArray(n)
+    val wgt = FloatArray(n)
+    val rr = FloatArray(n)
+    val gg = FloatArray(n)
+    val bb = FloatArray(n)
+    val hsv = FloatArray(3)
+    var wSum = 0f
+    var rSum = 0f
+    var gSum = 0f
+    var bSum = 0f
+    for (i in 0 until n) {
+        val c = px[i]
+        val r = (c shr 16) and 0xFF
+        val g = (c shr 8) and 0xFF
+        val b = c and 0xFF
+        android.graphics.Color.RGBToHSV(r, g, b, hsv)
+        rr[i] = r / 255f
+        gg[i] = g / 255f
+        bb[i] = b / 255f
+        hue[i] = hsv[0]
+        val w = auroraRamp(hsv[1], AUR_S0, AUR_S1) * auroraRamp(hsv[2], 0.04f, 0.20f)
+        wgt[i] = w
+        wSum += w
+        rSum += rr[i]
+        gSum += gg[i]
+        bSum += bb[i]
+    }
+    // Que tan colorida es la portada (0 = casi gris, 1 = colorida)
+    val vivid = (wSum / n / 0.12f).coerceIn(0f, 1f)
+
+    // 2b) Matices principales (para luces y base): los mas presentes en la zona central de la portada (sin bordes, marcos ni logos)
+    val tot = FloatArray(12)
+    val sinSum = FloatArray(12)
+    val cosSum = FloatArray(12)
+    for (y in (0.06f * sh).toInt() until (0.78f * sh).toInt()) {
+        for (x in (0.12f * sw).toInt() until (0.88f * sw).toInt()) {
+            val i = y * sw + x
+            val w = wgt[i]
+            if (w <= 0f) continue
+            val k = (hue[i] / 30f).toInt().coerceIn(0, 11)
+            val ang = Math.toRadians(hue[i].toDouble())
+            tot[k] += w
+            sinSum[k] += w * sin(ang).toFloat()
+            cosSum[k] += w * cos(ang).toFloat()
         }
     }
-    val veil = remember(isDark) {
-        if (isDark) {
-            Brush.verticalGradient(
-                0f to Color.Black.copy(alpha = 0.04f),
-                0.55f to Color.Black.copy(alpha = 0.10f),
-                1f to Color.Black.copy(alpha = 0.20f)
-            )
+    val totalW = tot.sum()
+    val order = (0 until 12).sortedByDescending { tot[it] }
+    val hues = ArrayList<Float>(3)
+    for (k in order) {
+        if (hues.isNotEmpty() && tot[k] <= 0.02f * maxOf(totalW, 1e-9f)) continue
+        val mean = if (tot[k] > 0f) {
+            ((Math.toDegrees(atan2(sinSum[k].toDouble(), cosSum[k].toDouble())).toFloat() % 360f) + 360f) % 360f
         } else {
-            Brush.verticalGradient(
-                0f to Color.White.copy(alpha = 0.25f),
-                0.55f to Color.White.copy(alpha = 0.30f),
-                1f to Color.White.copy(alpha = 0.35f)
-            )
+            k * 30f + 15f
+        }
+        // Distintos entre si (>= 28 grados) y no opuestos al matiz principal (los opuestos ensucian al mezclarse)
+        val distinct = hues.all { auroraHueDistance(mean, it) >= 28f }
+        val nearMain = hues.isEmpty() || auroraHueDistance(mean, hues[0]) <= AUR_MAX_HUE_SPAN
+        if (distinct && nearMain) hues.add(mean)
+        if (hues.size == 3) break
+    }
+    if (hues.isEmpty()) hues.add(0f)
+    val main = hues[0]
+    val pads = floatArrayOf((main + 20f) % 360f, (main - 20f + 360f) % 360f)
+    while (hues.size < 3) hues.add(pads[hues.size - 1])
+
+    // 3) Acumular peso y color por celda y por grupo de matiz (12 grupos de 30 grados)
+    val cells = AUR_GW * AUR_GH
+    val acc = Array(4) { FloatArray(12 * cells) }   // 0 = peso, 1..3 = color ponderado
+    val avg = Array(3) { FloatArray(cells) }        // promedio simple por celda (para portadas casi grises)
+    val cnt = FloatArray(cells)
+    val sinAll = FloatArray(12)
+    val cosAll = FloatArray(12)
+    for (y in 0 until sh) {
+        val cy = ((y * AUR_GH) / sh).coerceAtMost(AUR_GH - 1)
+        for (x in 0 until sw) {
+            val i = y * sw + x
+            val cx = ((x * AUR_GW) / sw).coerceAtMost(AUR_GW - 1)
+            val cell = cy * AUR_GW + cx
+            avg[0][cell] += rr[i]
+            avg[1][cell] += gg[i]
+            avg[2][cell] += bb[i]
+            cnt[cell] += 1f
+            val w = wgt[i]
+            if (w <= 0f) continue
+            val bin = (hue[i] / 30f).toInt().coerceIn(0, 11)
+            val ang = Math.toRadians(hue[i].toDouble())
+            sinAll[bin] += w * sin(ang).toFloat()
+            cosAll[bin] += w * cos(ang).toFloat()
+            val idx = bin * cells + cell
+            acc[0][idx] += w
+            acc[1][idx] += w * rr[i]
+            acc[2][idx] += w * gg[i]
+            acc[3][idx] += w * bb[i]
         }
     }
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(veil)
+    val glob = FloatArray(12)
+    for (k in 0 until 12) {
+        var s = 0f
+        for (c in 0 until cells) s += acc[0][k * cells + c]
+        glob[k] = s
+    }
+    val globMax = glob.maxOrNull() ?: 0f
+    val gpow = FloatArray(12) {
+        if (globMax > 0f) Math.pow((glob[it] / globMax).toDouble(), AUR_GEXP.toDouble()).toFloat() else 0f
+    }
+    // Los matices opuestos al principal no entran al campo de color (mezclados con el principal dan gris o verde sucio)
+    for (k in 0 until 12) {
+        if (glob[k] <= 0f) continue
+        val binHue = ((Math.toDegrees(atan2(sinAll[k].toDouble(), cosAll[k].toDouble())).toFloat() % 360f) + 360f) % 360f
+        if (auroraHueDistance(binHue, main) > AUR_MAX_HUE_SPAN) gpow[k] = 0f
+    }
+
+    // 4) Desenfoque local (r=3) y amplio (r=8) de cada grupo
+    val tmp = FloatArray(cells)
+    val local = Array(4) { FloatArray(12 * cells) }
+    val wide = Array(4) { FloatArray(12 * cells) }
+    val buf = FloatArray(cells)
+    for (ch in 0 until 4) {
+        for (k in 0 until 12) {
+            System.arraycopy(acc[ch], k * cells, buf, 0, cells)
+            auroraBlur(buf, tmp, AUR_GW, AUR_GH, 3, 3)
+            System.arraycopy(buf, 0, local[ch], k * cells, cells)
+            System.arraycopy(acc[ch], k * cells, buf, 0, cells)
+            auroraBlur(buf, tmp, AUR_GW, AUR_GH, 8, 3)
+            System.arraycopy(buf, 0, wide[ch], k * cells, cells)
+        }
+    }
+
+    // 5) Colores de portadas casi grises: el promedio desenfocado de la propia portada
+    for (ch in 0 until 3) {
+        for (c in 0 until cells) avg[ch][c] = avg[ch][c] / maxOf(cnt[c], 1f)
+        auroraBlur(avg[ch], tmp, AUR_GW, AUR_GH, 3, 3)
+    }
+
+    // 6) Cada celda "vota" por UN matiz (el suyo + la mitad de los vecinos, al cuadrado, por el peso global).
+    //    Nunca se promedian colores de matices distintos.
+    val field = Array(3) { FloatArray(cells) }
+    val own = FloatArray(12)
+    val rgb = FloatArray(3)
+    val grayRgb = FloatArray(3)
+    for (c in 0 until cells) {
+        // Oscurecimiento suave hacia abajo (mismo matiz, solo mas oscuro) para que se lean los botones y los tiempos
+        val rowT = ((c / AUR_GW) / (AUR_GH - 1f) - AUR_SHADE_START) / (1f - AUR_SHADE_START)
+        val t = rowT.coerceIn(0f, 1f)
+        val shade = 1f + (AUR_SHADE_END - 1f) * (t * t * (3f - 2f * t))
+        for (k in 0 until 12) own[k] = local[0][k * cells + c] + AUR_WIDE_MIX * wide[0][k * cells + c]
+        var best = 0
+        var bestScore = -1f
+        for (k in 0 until 12) {
+            val a = own[k] + AUR_NEIGHBORS * (own[(k + 11) % 12] + own[(k + 1) % 12])
+            val s = a * a * gpow[k]
+            if (s > bestScore) {
+                bestScore = s
+                best = k
+            }
+        }
+        val den = own[best] + 1e-9f
+        val r = ((local[1][best * cells + c] + AUR_WIDE_MIX * wide[1][best * cells + c]) / den).coerceIn(0f, 1f)
+        val g = ((local[2][best * cells + c] + AUR_WIDE_MIX * wide[2][best * cells + c]) / den).coerceIn(0f, 1f)
+        val b = ((local[3][best * cells + c] + AUR_WIDE_MIX * wide[3][best * cells + c]) / den).coerceIn(0f, 1f)
+        android.graphics.Color.RGBToHSV((r * 255f + 0.5f).toInt(), (g * 255f + 0.5f).toInt(), (b * 255f + 0.5f).toInt(), hsv)
+        val boosted = (hsv[1] * AUR_SAT_GAIN + AUR_SAT_ADD).coerceIn(AUR_SAT_MIN, 1f)
+        val sat = hsv[1] + (boosted - hsv[1]) * vivid
+        if (isDark) {
+            val v = (AUR_VAL_BASE + AUR_VAL_GAIN * hsv[2]).coerceIn(AUR_VAL_MIN, AUR_VAL_MAX) * shade
+            auroraHsvCapped(hsv[0], sat, v, AUR_LUM_CAP_FIELD, rgb)
+        } else {
+            val v = (0.80f + 0.15f * hsv[2]).coerceIn(0.80f, 0.97f)
+            auroraHsv(hsv[0], (sat * 0.55f).coerceIn(0f, 0.60f), v, rgb)
+        }
+        // Portada casi sin color: se mezcla hacia el promedio desenfocado de la propia portada
+        if (vivid < 1f) {
+            android.graphics.Color.RGBToHSV(
+                (avg[0][c] * 255f + 0.5f).toInt(), (avg[1][c] * 255f + 0.5f).toInt(), (avg[2][c] * 255f + 0.5f).toInt(), hsv
+            )
+            if (isDark) {
+                auroraHsvCapped(hsv[0], hsv[1], (hsv[2] * 0.55f).coerceIn(0.08f, 0.60f) * shade, AUR_LUM_CAP_FIELD, grayRgb)
+            } else {
+                auroraHsv(hsv[0], hsv[1] * 0.4f, (0.80f + 0.15f * hsv[2]).coerceIn(0.80f, 0.95f), grayRgb)
+            }
+            for (ch in 0 until 3) rgb[ch] = grayRgb[ch] + (rgb[ch] - grayRgb[ch]) * vivid
+        }
+        field[0][c] = rgb[0]
+        field[1][c] = rgb[1]
+        field[2][c] = rgb[2]
+    }
+    for (ch in 0 until 3) auroraBlur(field[ch], tmp, AUR_GW, AUR_GH, 2, 3)
+
+    // 7) Bitmap final: se agranda a 64x112 y se suaviza otra vez, asi no se ven pixeles al estirarlo a pantalla
+    val cellBitmap = Bitmap.createBitmap(AUR_GW, AUR_GH, Bitmap.Config.ARGB_8888)
+    val cellPixels = IntArray(cells) {
+        val r = (field[0][it] * 255f + 0.5f).toInt().coerceIn(0, 255)
+        val g = (field[1][it] * 255f + 0.5f).toInt().coerceIn(0, 255)
+        val b = (field[2][it] * 255f + 0.5f).toInt().coerceIn(0, 255)
+        (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+    }
+    cellBitmap.setPixels(cellPixels, 0, AUR_GW, 0, 0, AUR_GW, AUR_GH)
+    val out = Bitmap.createScaledBitmap(cellBitmap, AUR_OUT_W, AUR_OUT_H, true)
+    val outN = AUR_OUT_W * AUR_OUT_H
+    val outPixels = IntArray(outN)
+    out.getPixels(outPixels, 0, AUR_OUT_W, 0, 0, AUR_OUT_W, AUR_OUT_H)
+    val red = IntArray(outN) { (outPixels[it] shr 16) and 0xFF }
+    val green = IntArray(outN) { (outPixels[it] shr 8) and 0xFF }
+    val blue = IntArray(outN) { outPixels[it] and 0xFF }
+    val outTmp = IntArray(outN)
+    repeat(2) {
+        spatialBoxBlur(red, outTmp, AUR_OUT_W, AUR_OUT_H, 3)
+        spatialBoxBlur(green, outTmp, AUR_OUT_W, AUR_OUT_H, 3)
+        spatialBoxBlur(blue, outTmp, AUR_OUT_W, AUR_OUT_H, 3)
+    }
+    for (i in 0 until outN) outPixels[i] = (0xFF shl 24) or (red[i] shl 16) or (green[i] shl 8) or blue[i]
+    val finalBitmap = Bitmap.createBitmap(AUR_OUT_W, AUR_OUT_H, Bitmap.Config.ARGB_8888)
+    finalBitmap.setPixels(outPixels, 0, AUR_OUT_W, 0, 0, AUR_OUT_W, AUR_OUT_H)
+
+    // 9) Colores base (del matiz principal) y luces
+    val tmpRgb = FloatArray(3)
+    fun colorOf(h: Float, s: Float, v: Float, cap: Float): Color {
+        if (isDark) auroraHsvCapped(h, s, v, cap, tmpRgb) else auroraHsv(h, s, v, tmpRgb)
+        return Color(tmpRgb[0].coerceIn(0f, 1f), tmpRgb[1].coerceIn(0f, 1f), tmpRgb[2].coerceIn(0f, 1f))
+    }
+    var top = if (isDark) colorOf(main, 0.85f, 0.60f, 0.20f) else colorOf(main, 0.25f, 1.00f, 1f)
+    var mid = if (isDark) colorOf(main, 0.85f, 0.42f, 0.20f) else colorOf(main, 0.30f, 0.96f, 1f)
+    var deep = if (isDark) colorOf(main, 0.85f, 0.32f, 0.20f) else colorOf(main, 0.35f, 0.92f, 1f)
+    var lightA = if (isDark) colorOf(hues[1], 0.75f, 1f, AUR_LUM_CAP_LIGHT) else colorOf(hues[1], 0.45f, 1f, 1f)
+    var lightB = if (isDark) colorOf(hues[2], 0.75f, 1f, AUR_LUM_CAP_LIGHT) else colorOf(hues[2], 0.45f, 1f, 1f)
+    if (vivid < 1f) {
+        // Portada casi gris: base y luces en el gris de la propia portada
+        val gray = (rSum + gSum + bSum) / (3f * n)
+        val grayBase = if (isDark) (gray * 0.8f).coerceIn(0.10f, 0.30f) else (0.80f + 0.15f * gray).coerceIn(0.80f, 0.95f)
+        top = auroraMix(top, grayBase, vivid)
+        mid = auroraMix(mid, grayBase * 0.85f, vivid)
+        deep = auroraMix(deep, grayBase * 0.70f, vivid)
+        lightA = auroraMix(lightA, (grayBase * 1.6f).coerceAtMost(1f), vivid)
+        lightB = auroraMix(lightB, (grayBase * 1.6f).coerceAtMost(1f), vivid)
+    }
+
+    return SpatialAurora(
+        field = finalBitmap.asImageBitmap(),
+        top = top,
+        mid = mid,
+        deep = deep,
+        lightA = lightA,
+        lightB = lightB
     )
+}
+
+/** Fondos ya calculados: la cancion actual y las vecinas. */
+private val spatialAuroraCache = LruCache<String, SpatialAurora>(8)
+
+private suspend fun spatialLoadAurora(context: android.content.Context, uri: Uri, isDark: Boolean): SpatialAurora? {
+    val key = uri.toString() + if (isDark) "|d" else "|l"
+    spatialAuroraCache.get(key)?.let { return it }
+    return withContext(Dispatchers.Default) {
+        try {
+            val bitmap = withContext(Dispatchers.IO) { ImageUtils.loadArtworkBitmap(context, uri, AUR_SRC) }
+            if (bitmap != null) {
+                spatialAuroraFromBitmap(bitmap, isDark).also { spatialAuroraCache.put(key, it) }
+            } else {
+                null
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+    }
+}
+
+/** Deja listo el fondo de [uri] (cancion anterior y siguiente) para que al cambiar de cancion aparezca al instante. */
+private suspend fun spatialPrefetchAurora(context: android.content.Context, uri: Uri?, isDark: Boolean) {
+    if (uri == null) return
+    spatialLoadAurora(context, uri, isDark)
+}
+
+@Composable
+private fun SpatialAuroraLayer(aurora: SpatialAurora, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier.drawWithCache {
+            val baseBrush = Brush.verticalGradient(listOf(aurora.top, aurora.mid, aurora.deep))
+            onDrawBehind {
+                // degradado base + campo de color estirado a toda la pantalla (el estirado suave ya da el desenfoque)
+                drawRect(brush = baseBrush)
+                drawImage(
+                    image = aurora.field,
+                    dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
+                    alpha = 0.92f,
+                    filterQuality = FilterQuality.Low
+                )
+            }
+        }
+    )
+}
+
+/** Fondo del reproductor con los colores de la portada. Cambia con fundido cruzado al cambiar de cancion. */
+@Composable
+private fun SpatialBackdrop(artworkUri: Uri?, isDark: Boolean) {
+    val context = LocalContext.current
+    val aurora by produceState<SpatialAurora?>(initialValue = null, artworkUri, isDark) {
+        value = if (artworkUri == null) null else spatialLoadAurora(context, artworkUri, isDark)
+    }
+    Crossfade(
+        targetState = aurora,
+        animationSpec = tween(700),
+        label = "SpatialAurora"
+    ) { current ->
+        if (current != null) {
+            SpatialAuroraLayer(aurora = current, modifier = Modifier.fillMaxSize())
+        }
+    }
 }
 
 /** Tiempo como en SpatialFlow: siempre mm:ss con ceros (00:05). */
