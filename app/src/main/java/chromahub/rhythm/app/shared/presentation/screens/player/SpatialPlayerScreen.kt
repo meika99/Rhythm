@@ -705,6 +705,19 @@ private const val AUR_SHADE_START = 0.35f    // desde esta altura (0..1) el camp
 private const val AUR_SHADE_END = 0.62f      // ...hasta este factor abajo (mismo matiz, solo mas oscuro; no es negro)
 private const val AUR_MAX_HUE_SPAN = 110f   // matices mas lejos que esto del principal (opuestos) se descartan: mezclados ensucian
 
+// Luz ambiental (Fase 1.1): los blancos y destellos de la portada (muy claros y casi sin color) NO son color base,
+// pero aportan un toque tenue de luz arriba, con el tinte real de esos destellos.
+private const val AUR_GLOW_V0 = 0.72f         // brillo desde el que un pixel empieza a contar como destello...
+private const val AUR_GLOW_V1 = 0.92f         // ...y brillo en que cuenta completo
+private const val AUR_GLOW_S0 = 0.12f         // saturacion hasta la que es "blanco" (cuenta completo)...
+private const val AUR_GLOW_S1 = 0.42f         // ...y desde la que ya es color (no cuenta)
+private const val AUR_GLOW_MAX = 0.32f        // mezcla maxima del destello con el fondo (0 = sin luz, mas alto = mas luz)
+private const val AUR_GLOW_GAIN = 3.0f        // cuanto destello hace falta en una zona para llegar al maximo
+private const val AUR_GLOW_BLUR = 4           // suavizado del mapa de luz (ambiental, sin formas)
+private const val AUR_GLOW_FADE_END = 0.65f   // la luz se apaga hacia abajo y desaparece a esta altura (no toca titulo ni botones)
+private const val AUR_GLOW_CAP_EXTRA = 0.03f  // el tope de luminancia solo sube esto donde hay luz
+private const val AUR_GLOW_HUE_SPAN = 60f     // si el tinte del destello es de otro matiz (opuesto), se usa el principal: no ensucia
+
 private data class SpatialAurora(
     val field: ImageBitmap,
     val top: Color,
@@ -817,6 +830,11 @@ private fun spatialAuroraFromBitmap(source: Bitmap, isDark: Boolean): SpatialAur
     val rr = FloatArray(n)
     val gg = FloatArray(n)
     val bb = FloatArray(n)
+    val glow = FloatArray(n)    // cuanto cuenta cada pixel como destello / blanco (solo luz ambiental)
+    var glowW = 0f
+    var glowR = 0f
+    var glowG = 0f
+    var glowB = 0f
     val hsv = FloatArray(3)
     var wSum = 0f
     var rSum = 0f
@@ -834,6 +852,12 @@ private fun spatialAuroraFromBitmap(source: Bitmap, isDark: Boolean): SpatialAur
         hue[i] = hsv[0]
         val w = auroraRamp(hsv[1], AUR_S0, AUR_S1) * auroraRamp(hsv[2], 0.04f, 0.20f)
         wgt[i] = w
+        val gl = auroraRamp(hsv[2], AUR_GLOW_V0, AUR_GLOW_V1) * (1f - auroraRamp(hsv[1], AUR_GLOW_S0, AUR_GLOW_S1))
+        glow[i] = gl
+        glowW += gl
+        glowR += gl * rr[i]
+        glowG += gl * gg[i]
+        glowB += gl * bb[i]
         wSum += w
         rSum += rr[i]
         gSum += gg[i]
@@ -878,6 +902,21 @@ private fun spatialAuroraFromBitmap(source: Bitmap, isDark: Boolean): SpatialAur
     val main = hues[0]
     val pads = floatArrayOf((main + 20f) % 360f, (main - 20f + 360f) % 360f)
     while (hues.size < 3) hues.add(pads[hues.size - 1])
+
+    // 2c) Color de la luz ambiental: el tinte real de los destellos (un blanco claro con su matiz). Si ese tinte es de un
+    //     matiz opuesto al principal (o es blanco puro) se usa el principal, asi nunca ensucia al mezclarse.
+    val glowRgb = FloatArray(3)
+    if (isDark && glowW > 1f) {
+        android.graphics.Color.RGBToHSV(
+            ((glowR / glowW) * 255f + 0.5f).toInt().coerceIn(0, 255),
+            ((glowG / glowW) * 255f + 0.5f).toInt().coerceIn(0, 255),
+            ((glowB / glowW) * 255f + 0.5f).toInt().coerceIn(0, 255),
+            hsv
+        )
+        val glowHue = if (hsv[1] >= 0.06f && auroraHueDistance(hsv[0], main) <= AUR_GLOW_HUE_SPAN) hsv[0] else main
+        val glowSat = (hsv[1] * 1.6f + 0.12f).coerceIn(0.20f, 0.38f)
+        auroraHsvCapped(glowHue, glowSat, 1f, AUR_LUM_CAP_FIELD + AUR_GLOW_CAP_EXTRA, glowRgb)
+    }
 
     // 3) Acumular peso y color por celda y por grupo de matiz (12 grupos de 30 grados)
     val cells = AUR_GW * AUR_GH
@@ -948,6 +987,18 @@ private fun spatialAuroraFromBitmap(source: Bitmap, isDark: Boolean): SpatialAur
         auroraBlur(avg[ch], tmp, AUR_GW, AUR_GH, 3, 3)
     }
 
+    // 5b) Cuanto destello (blancos / brillos) hay en cada zona, muy suavizado: solo sirve de acento de luz
+    val glowCell = FloatArray(cells)
+    for (y in 0 until sh) {
+        val cy = ((y * AUR_GH) / sh).coerceAtMost(AUR_GH - 1)
+        for (x in 0 until sw) {
+            val cx = ((x * AUR_GW) / sw).coerceAtMost(AUR_GW - 1)
+            glowCell[cy * AUR_GW + cx] += glow[y * sw + x]
+        }
+    }
+    for (c in 0 until cells) glowCell[c] = glowCell[c] / maxOf(cnt[c], 1f)
+    auroraBlur(glowCell, tmp, AUR_GW, AUR_GH, AUR_GLOW_BLUR, 3)
+
     // 6) Cada celda "vota" por UN matiz (el suyo + la mitad de los vecinos, al cuadrado, por el peso global).
     //    Nunca se promedian colores de matices distintos.
     val field = Array(3) { FloatArray(cells) }
@@ -995,6 +1046,23 @@ private fun spatialAuroraFromBitmap(source: Bitmap, isDark: Boolean): SpatialAur
                 auroraHsv(hsv[0], hsv[1] * 0.4f, (0.80f + 0.15f * hsv[2]).coerceIn(0.80f, 0.95f), grayRgb)
             }
             for (ch in 0 until 3) rgb[ch] = grayRgb[ch] + (rgb[ch] - grayRgb[ch]) * vivid
+        }
+        // Luz ambiental (Fase 1.1): los destellos de la portada aclaran un poco la parte de arriba. Es un tinte suave del mismo
+        // matiz (no el color base) y se apaga hacia abajo; el tope de luminancia solo sube un poco donde hay luz.
+        if (isDark && glowW > 1f) {
+            val rowFrac = (c / AUR_GW) / (AUR_GH - 1f)
+            val fall = 1f - auroraRamp(rowFrac, 0f, AUR_GLOW_FADE_END)
+            val amt = AUR_GLOW_MAX * (glowCell[c] * AUR_GLOW_GAIN).coerceIn(0f, 1f) * fall * vivid
+            if (amt > 0.002f) {
+                for (ch in 0 until 3) rgb[ch] = rgb[ch] + (glowRgb[ch] - rgb[ch]) * amt
+                android.graphics.Color.RGBToHSV(
+                    (rgb[0] * 255f + 0.5f).toInt().coerceIn(0, 255),
+                    (rgb[1] * 255f + 0.5f).toInt().coerceIn(0, 255),
+                    (rgb[2] * 255f + 0.5f).toInt().coerceIn(0, 255),
+                    hsv
+                )
+                auroraHsvCapped(hsv[0], hsv[1], hsv[2], AUR_LUM_CAP_FIELD + AUR_GLOW_CAP_EXTRA * (amt / AUR_GLOW_MAX), rgb)
+            }
         }
         field[0][c] = rgb[0]
         field[1][c] = rgb[1]
