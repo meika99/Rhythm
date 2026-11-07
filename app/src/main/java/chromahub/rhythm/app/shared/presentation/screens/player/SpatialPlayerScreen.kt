@@ -25,7 +25,6 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import android.graphics.Bitmap
-import android.provider.Settings
 import android.util.LruCache
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -1159,13 +1158,14 @@ private suspend fun spatialPrefetchAurora(context: android.content.Context, uri:
 // ---- Fase 2: movimiento y orbes de luz (ajustables aqui) ----
 private const val AUR_PERIOD_MS = 48_000f        // vuelta completa del reloj; cada movimiento es un numero ENTERO de ciclos de esta vuelta, asi el bucle cierra sin saltos
 private const val AUR_FRAME_NS = 30_000_000L     // ~30 fps: se ve igual de suave en un fondo difuso y gasta la mitad que 60
-private const val AUR_FIELD_OVERSCAN = 1.20f     // el campo se dibuja 20 % mas grande que la pantalla para poder moverlo sin que asomen bordes
-private const val AUR_DRIFT_X = 0.070f           // vaiven horizontal del campo (fraccion del ancho); 2 ciclos = 24 s por ciclo
-private const val AUR_DRIFT_Y = 0.035f           // vaiven vertical del campo (fraccion del alto); 3 ciclos = 16 s por ciclo
-private const val AUR_ORB_A_RADIUS = 0.75f       // radio de los orbes (fraccion del ancho)
-private const val AUR_ORB_B_RADIUS = 0.60f
-private const val AUR_ORB_A_ALPHA = 0.52f        // fuerza del orbe en su centro
-private const val AUR_ORB_B_ALPHA = 0.42f
+private const val AUR_FIELD_OVERSCAN = 1.30f     // el campo se dibuja 30 % mas grande que la pantalla para poder moverlo sin que asomen bordes
+private const val AUR_DRIFT_X = 0.110f           // vaiven horizontal del campo (fraccion del ancho); 3 ciclos = 16 s por ciclo
+private const val AUR_DRIFT_Y = 0.060f           // vaiven vertical del campo (fraccion del alto); 2 ciclos = 24 s por ciclo
+private const val AUR_FIELD_BREATHE = 0.04f      // el campo se acerca y aleja +-4 % (lento); con overscan 1.30 los bordes nunca asoman
+private const val AUR_ORB_A_RADIUS = 0.85f       // radio de los orbes (fraccion del ancho)
+private const val AUR_ORB_B_RADIUS = 0.70f
+private const val AUR_ORB_A_ALPHA = 0.72f        // fuerza del orbe en su centro
+private const val AUR_ORB_B_ALPHA = 0.60f
 private const val AUR_TWO_PI = 6.2831855f
 
 /** Seno de [n] ciclos enteros por vuelta del reloj (n entero = el movimiento cierra exacto al terminar la vuelta). */
@@ -1251,9 +1251,13 @@ private fun SpatialAuroraLayer(aurora: SpatialAurora, phase: FloatState, modifie
                     // 1) degradado base del matiz principal
                     drawRect(brush = baseBrush)
                     // 2) campo de color de la portada con vaiven suave (seno: sin aceleraciones raras)
-                    val dx = w * AUR_DRIFT_X * auroraCycle(p, 2)
-                    val dy = h * AUR_DRIFT_Y * auroraCycle(p, 3, 0.25f)
-                    withTransform({ translate(left = dx, top = dy) }) {
+                    val dx = w * AUR_DRIFT_X * auroraCycle(p, 3)
+                    val dy = h * AUR_DRIFT_Y * auroraCycle(p, 2, 0.25f)
+                    val fieldScale = 1f + AUR_FIELD_BREATHE * auroraCycle(p, 1, 0.5f)
+                    withTransform({
+                        translate(left = dx, top = dy)
+                        scale(scaleX = fieldScale, scaleY = fieldScale, pivot = Offset(w / 2f, h / 2f))
+                    }) {
                         drawImage(
                             image = aurora.field,
                             dstOffset = fieldOffset,
@@ -1263,9 +1267,9 @@ private fun SpatialAuroraLayer(aurora: SpatialAurora, phase: FloatState, modifie
                         )
                     }
                     // 3) orbe A: franja superior (sobre la portada), recorre el ancho y "respira"
-                    val breathe = 1f + 0.10f * auroraCycle(p, 3)
-                    val ax = w * (0.5f + 0.34f * auroraCycle(p, 1))
-                    val ay = h * (0.14f + 0.07f * auroraCycle(p, 2, 0.25f))
+                    val breathe = 1f + 0.12f * auroraCycle(p, 3)
+                    val ax = w * (0.5f + 0.40f * auroraCycle(p, 2))
+                    val ay = h * (0.14f + 0.07f * auroraCycle(p, 3, 0.25f))
                     withTransform({
                         translate(left = ax, top = ay)
                         scale(scaleX = breathe, scaleY = breathe, pivot = Offset.Zero)
@@ -1274,8 +1278,8 @@ private fun SpatialAuroraLayer(aurora: SpatialAurora, phase: FloatState, modifie
                     }
                     // 4) orbe B: zona bajo la portada, va al reves
                     val breatheB = 2f - breathe
-                    val bx = w * (0.5f - 0.30f * auroraCycle(p, 2, 0.1f))
-                    val by = h * (0.64f + 0.08f * auroraCycle(p, 1, 0.5f))
+                    val bx = w * (0.5f - 0.36f * auroraCycle(p, 3, 0.1f))
+                    val by = h * (0.64f + 0.08f * auroraCycle(p, 2, 0.5f))
                     withTransform({
                         translate(left = bx, top = by)
                         scale(scaleX = breatheB, scaleY = breatheB, pivot = Offset.Zero)
@@ -1289,7 +1293,7 @@ private fun SpatialAuroraLayer(aurora: SpatialAurora, phase: FloatState, modifie
 
 /**
  * Fondo del reproductor con los colores de la portada. Cambia con fundido cruzado al cambiar de cancion.
- * Se mueve solo si el reproductor se ve ([isVisible]), la app esta a la vista y el sistema no tiene las animaciones apagadas.
+ * Se mueve solo si el reproductor se ve ([isVisible]) y la app esta a la vista (no depende de la escala de animaciones del sistema).
  */
 @Composable
 private fun SpatialBackdrop(artworkUri: Uri?, isDark: Boolean, isVisible: Boolean) {
@@ -1297,11 +1301,8 @@ private fun SpatialBackdrop(artworkUri: Uri?, isDark: Boolean, isVisible: Boolea
     val aurora by produceState<SpatialAurora?>(initialValue = null, artworkUri, isDark) {
         value = if (artworkUri == null) null else spatialLoadAurora(context, artworkUri, isDark)
     }
-    val animationsOn = remember {
-        Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) != 0f
-    }
     val started = rememberLifecycleStarted()
-    val phase = rememberAuroraPhase(running = isVisible && started && animationsOn)
+    val phase = rememberAuroraPhase(running = isVisible && started)
     Crossfade(
         targetState = aurora,
         animationSpec = tween(700),
